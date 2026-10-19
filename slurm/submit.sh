@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Noninteractive Slurm submission wrapper for VerifiedSamplingSFT (A100 defaults).
+# Noninteractive Slurm submission wrapper for VerifiedSamplingSFT (H100 defaults).
 # Run on the cluster login node from a checkout of this repository. See --help.
 # Portable to bash >= 3.2.
 set -Eeuo pipefail
@@ -40,10 +40,10 @@ Run directory (exactly one of)
                           runs/<config name>); snapshots code + config into it
   --resume RUN_DIR        reuse an existing run (its code snapshot and config.yaml)
 
-Resources (GPU stages; defaults suit one A100)
-  --gpus TYPE:N           GPU stages, default a100:1 (boost/eval always use one GPU)
+Resources (GPU stages; defaults suit one H100)
+  --gpus TYPE:N           GPU stages, default h100:1 (boost/eval always use one GPU)
   --train-gpus TYPE:N     train/train_sft only (default: --gpus); N>1 -> accelerate launch,
-                          e.g. a100:2 with --accelerate-config for FSDP full fine-tuning
+                          e.g. h100:2 with --accelerate-config for FSDP full fine-tuning
   --cpus N                default 8
   --mem SIZE              host RAM per job, default 120G (not GPU memory)
   --time D-HH:MM:SS       default: per-stage #SBATCH value
@@ -52,17 +52,17 @@ Resources (GPU stages; defaults suit one A100)
   --cpu-mem SIZE, --cpu-time T   overrides for CPU stages
 
 Environment and storage
-  --config PATH           vsft YAML (default configs/a100/math_qwen35.yaml), fresh runs only
+  --config PATH           vsft YAML (default configs/h100/math_qwen35.yaml), fresh runs only
   --module NAME           `module load NAME` inside each job (repeatable)
   --venv PATH             environment (default CACHE_ROOT/venvs/<uv.lock sha>: one per lock,
                           so runs with different locks never rebuild each other's venv)
   --cache-root PATH       HF/uv/vLLM/Triton caches (default PROJECT/.cache; use scratch)
   --hf-home PATH          override the HF cache only
   --online                allow Hub access from GPU stages (default: offline)
-  --gpu-type STR          preflight requires this in the GPU name (default A100; '' = any)
-  --min-gpu-mem-gb N      preflight minimum GPU memory (default 39; 79 for 80GB-only)
+  --gpu-type STR          preflight requires this in the GPU name (default H100; '' = any)
+  --min-gpu-mem-gb N      preflight minimum GPU memory (default 79: H100 80 GB)
   --gpu-capability X.Y    preflight requires this CUDA compute capability and matching torch
-                          kernels (default 8.0 = A100 sm_80; '' = any)
+                          kernels (default 9.0 = H100 sm_90; '' = any)
   --preempt-grace SEC     time the workload gets to checkpoint after the USR1 warning
                           (default per stage: boost/train 500, eval 240, others 60; always
                           capped per stage at its --signal lead minus 60 s)
@@ -112,9 +112,9 @@ STAGE="$1"; shift
 case "$STAGE" in setup|prepare|boost|train|eval|train_sft|eval_sft|eval_base|gpucheck|pipeline|compare) ;; *) die "unknown stage '$STAGE' (see --help)" ;; esac
 
 ACCOUNT="" RUN_BASE="" RESUME="" CONFIG="" CONFIG_GIVEN=0 PROJECT_DIR="$DEFAULT_PROJECT_DIR"
-GPUS="a100:1" TRAIN_GPUS="" CPUS="8" MEM="120G" TIME="" PARTITION="" QOS="" RESERVATION="" CONSTRAINT=""
+GPUS="h100:1" TRAIN_GPUS="" CPUS="8" MEM="120G" TIME="" PARTITION="" QOS="" RESERVATION="" CONSTRAINT=""
 CPU_PARTITION="" CPU_MEM="" CPU_TIME="" MODULES=() VENV="" CACHE_ROOT="" HF_HOME_DIR=""
-OFFLINE=1 GPU_TYPE="A100" GPU_CAPABILITY="8.0" MIN_GPU_MEM_GB="39" PREEMPT_GRACE="" STAGES_OPT="" INPUT=""
+OFFLINE=1 GPU_TYPE="H100" GPU_CAPABILITY="9.0" MIN_GPU_MEM_GB="79" PREEMPT_GRACE="" STAGES_OPT="" INPUT=""
 TRAIN_DATA="" TRAIN_RESUME="" ACC_CONFIG="" EVAL_MODEL="" EVAL_DATA=() DATASETS=""
 DEPEND_ON="" ALLOW_DUP=0 MONITOR_TIMEOUT=300 NO_MONITOR=0 MIN_FREE_GB=50 DRY_RUN=0 EXTRA=()
 RUN_DIR=""
@@ -174,8 +174,8 @@ done
 [[ "$ACCOUNT" =~ ^[A-Za-z0-9_.-]+$ ]] || die "--account has unexpected characters"
 [[ -z "$RUN_BASE" || -z "$RESUME" ]] || die "--run-dir and --resume are mutually exclusive"
 [[ -z "$RESUME" || "$CONFIG_GIVEN" -eq 0 ]] || die "--config only applies to fresh runs (a resumed run keeps its config.yaml)"
-[[ "$GPUS" =~ ^[A-Za-z0-9_]+:[1-8]$ ]] || die "--gpus must look like a100:1 .. a100:8"
-[[ -z "$TRAIN_GPUS" || "$TRAIN_GPUS" =~ ^[A-Za-z0-9_]+:[1-8]$ ]] || die "--train-gpus must look like a100:2"
+[[ "$GPUS" =~ ^[A-Za-z0-9_]+:[1-8]$ ]] || die "--gpus must look like h100:1 .. h100:8"
+[[ -z "$TRAIN_GPUS" || "$TRAIN_GPUS" =~ ^[A-Za-z0-9_]+:[1-8]$ ]] || die "--train-gpus must look like h100:2"
 if [[ ( "$STAGE" == "pipeline" || "$STAGE" == "compare" ) && "${GPUS##*:}" -gt 1 ]]; then
   # boost/eval run on one GPU; a multi-GPU --gpus would leave GPUs idle for hours.
   die "--gpus ${GPUS} would apply to every GPU stage; use --train-gpus for multi-GPU training"
@@ -190,7 +190,7 @@ if [[ -n "$PREEMPT_GRACE" ]] && (( PREEMPT_GRACE >= 540 )); then
   die "--preempt-grace must be < 540 s (the longest stage warning is 600 s, minus margin)"
 fi
 [[ "$MIN_GPU_MEM_GB" =~ ^[0-9]+([.][0-9]+)?$ ]] || die "--min-gpu-mem-gb must be a number"
-[[ -z "$GPU_CAPABILITY" || "$GPU_CAPABILITY" =~ ^[0-9]+\.[0-9]$ ]] || die "--gpu-capability must look like 8.0"
+[[ -z "$GPU_CAPABILITY" || "$GPU_CAPABILITY" =~ ^[0-9]+\.[0-9]$ ]] || die "--gpu-capability must look like 9.0"
 [[ -z "$DEPEND_ON" || "$DEPEND_ON" =~ ^[0-9]+(:[0-9]+)*$ ]] || die "--depend-on must be JOBID[:JOBID...]"
 [[ -z "$TRAIN_RESUME" || "$STAGE" == "train" || "$STAGE" == "train_sft" ]] || die "--train-resume is only valid for the train or train_sft stage"
 [[ -z "$STAGES_OPT" || "$STAGE" == "pipeline" || "$STAGE" == "compare" ]] || die "--stages is only valid with pipeline or compare"
@@ -385,7 +385,7 @@ if [[ -n "$RESUME" ]]; then
   [[ -f "$RUN_DIR/config.yaml" ]] || die "--resume $RUN_DIR has no config.yaml"
   [[ -f "$RUN_DIR/code/uv.lock" && -d "$RUN_DIR/code/src/vsft" ]] || die "--resume $RUN_DIR has no code snapshot"
 else
-  CONFIG="$(abspath "${CONFIG:-configs/a100/math_qwen35.yaml}")"
+  CONFIG="$(abspath "${CONFIG:-configs/h100/math_qwen35.yaml}")"
   [[ -f "$CONFIG" ]] || die "config not found: $CONFIG"
   base="$(abspath "${RUN_BASE:-runs/$(basename "${CONFIG%.*}")}")"
   if [[ "$DRY_RUN" -eq 1 ]]; then
@@ -474,8 +474,8 @@ if [[ "$DRY_RUN" -eq 0 ]]; then
   fi
 fi
 
-# A separate verifier shares the boost GPU with the student: that needs an 80 GB A100.
-# Checked here (stdlib YAML subset reader) so a 40 GB node never wastes the queue wait.
+# A separate verifier shares the boost GPU with the student: that needs an 80 GB H100.
+# Checked here (stdlib YAML subset reader) so a smaller GPU never wastes the queue wait.
 cfg_for_check="$RUN_CONFIG"; [[ -f "$cfg_for_check" ]] || cfg_for_check="${CONFIG:-}"
 if has_stage boost && [[ -n "$cfg_for_check" && -f "$cfg_for_check" ]]; then
   sep_verifier="$(python3 - "$cfg_for_check" <<'PY'
@@ -497,7 +497,7 @@ print("1" if v and v != s else "0")
 PY
 )"
   if [[ "$sep_verifier" == "1" ]] && awk -v m="$MIN_GPU_MEM_GB" 'BEGIN{exit !(m < 79)}'; then
-    die "this config runs a separate verifier next to the student on the boost GPU, which needs an 80 GB A100: pass --min-gpu-mem-gb 79 (plus your site's 80 GB constraint/partition), or set verifier.model: \"\" for 40 GB cards"
+    die "this config runs a separate verifier next to the student on the boost GPU, which needs an 80 GB H100: pass --min-gpu-mem-gb 79 (the default) and use an 80 GB H100 partition"
   fi
 fi
 

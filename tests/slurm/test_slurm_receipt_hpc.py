@@ -171,7 +171,7 @@ def test_preflight_cpu_writes_preflight_ok_not_started(tmp_path):
 
 def test_preflight_require_gpu_fails_on_mac(tmp_path):
     p = hpc("preflight", "--run-dir", tmp_path, "--stage", "boost", "--require-gpu",
-            "--require-bf16", "--gpu-type", "A100", "--min-gpu-mem-gb", "39",
+            "--require-bf16", "--gpu-type", "H100", "--min-gpu-mem-gb", "39",
             env={"SLURM_JOB_ID": "1"})
     assert p.returncode == 2
     assert "no CUDA device" in p.stderr
@@ -211,7 +211,7 @@ def test_preflight_require_lock(tmp_path):
 
 
 def test_config_get(tmp_path):
-    cfg = REPO / "configs" / "a100" / "math_qwen35.yaml"
+    cfg = REPO / "configs" / "h100" / "math_qwen35.yaml"
     p = hpc("config-get", "--config", cfg, "model.name_or_path")
     assert p.returncode == 0 and p.stdout.strip()
     import yaml

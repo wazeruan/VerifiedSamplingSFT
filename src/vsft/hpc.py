@@ -1,6 +1,6 @@
 """In-allocation helpers for Slurm jobs (run inside the project venv on the compute node).
 
-    python -m vsft.hpc preflight --run-dir R --stage S [--require-gpu --gpu-type A100 ...]
+    python -m vsft.hpc preflight --run-dir R --stage S [--require-gpu --gpu-type H100 ...]
     python -m vsft.hpc download-model --config C
     python -m vsft.hpc config-get --config C model.name_or_path
     python -m vsft.hpc check-train --dir D
@@ -162,7 +162,7 @@ def gpu_report(
         if not devices:
             problems.append("no CUDA device visible in this allocation (driver/runtime mismatch?)")
         if capability and devices:
-            # e.g. A100 = sm_80: the torch build must ship kernels for it.
+            # e.g. H100 = sm_90: the torch build must ship kernels for it.
             arch = "sm_" + capability.replace(".", "")
             if arch not in report["cuda_arch_list"]:
                 problems.append(f"torch build lacks {arch} kernels: {report['cuda_arch_list']}")
@@ -214,8 +214,8 @@ def _nvidia_driver_version() -> str | None:
     return out[0] if out else None
 
 
-def enable_a100_math() -> None:
-    """Ampere+ (A100): allow TF32 for fp32 matmuls/convolutions. No-op without CUDA."""
+def enable_tf32_math() -> None:
+    """Ampere+ (H100): allow TF32 for fp32 matmuls/convolutions. No-op without CUDA."""
     import torch
 
     if torch.cuda.is_available() and torch.cuda.get_device_capability(0)[0] >= 8:
@@ -417,10 +417,10 @@ def main(argv=None) -> int:
     f.add_argument("--run-dir", required=True)
     f.add_argument("--stage", required=True)
     f.add_argument("--require-gpu", action="store_true")
-    f.add_argument("--gpu-type", default=None, help="substring of the device name, e.g. A100")
+    f.add_argument("--gpu-type", default=None, help="substring of the device name, e.g. H100")
     f.add_argument("--min-gpu-mem-gb", type=float, default=0.0)
     f.add_argument("--require-bf16", action="store_true")
-    f.add_argument("--gpu-capability", default=None, help="exact compute capability, e.g. 8.0")
+    f.add_argument("--gpu-capability", default=None, help="exact compute capability, e.g. 9.0")
     f.add_argument("--require-file", action="append", default=[])
     f.add_argument("--require-model", action="append", default=[], help="HF id or local dir")
     f.add_argument("--require-lock", help="uv.lock the venv must have been built from")

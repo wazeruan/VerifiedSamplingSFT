@@ -378,27 +378,27 @@ def test_record_stopped(tmp_path, monkeypatch):
         "job_id": None, "written": 2, "total": 5}
 
 
-# ------------------------------------------------------------------ A100 math flags
+# ------------------------------------------------------------------ H100 math flags
 
 
 @pytest.mark.parametrize("cap,expect", [((8, 0), True), ((9, 0), True), ((7, 0), False)])
-def test_enable_a100_math(monkeypatch, cap, expect):
+def test_enable_tf32_math(monkeypatch, cap, expect):
     import torch
 
     mm, cudnn = torch.backends.cuda.matmul, torch.backends.cudnn
     before = (mm.allow_tf32, cudnn.allow_tf32)
-    # monkeypatch restores both flags at teardown, whatever enable_a100_math did
+    # monkeypatch restores both flags at teardown, whatever enable_tf32_math did
     monkeypatch.setattr(mm, "allow_tf32", False)
     monkeypatch.setattr(cudnn, "allow_tf32", False)
     monkeypatch.setattr(torch.cuda, "is_available", lambda: True)
     monkeypatch.setattr(torch.cuda, "get_device_capability", lambda device=None: cap)
-    hpc.enable_a100_math()
+    hpc.enable_tf32_math()
     assert mm.allow_tf32 is expect and cudnn.allow_tf32 is expect
     monkeypatch.undo()
     assert (mm.allow_tf32, cudnn.allow_tf32) == before
 
 
-def test_enable_a100_math_noop_without_cuda(monkeypatch):
+def test_enable_tf32_math_noop_without_cuda(monkeypatch):
     import torch
 
     mm, cudnn = torch.backends.cuda.matmul, torch.backends.cudnn
@@ -410,20 +410,20 @@ def test_enable_a100_math_noop_without_cuda(monkeypatch):
         raise AssertionError("capability must not be queried without CUDA")
 
     monkeypatch.setattr(torch.cuda, "get_device_capability", no_device)
-    hpc.enable_a100_math()
+    hpc.enable_tf32_math()
     assert mm.allow_tf32 is False and cudnn.allow_tf32 is False
 
 
-def test_enable_a100_math_is_wired_in():
+def test_enable_tf32_math_is_wired_in():
     import inspect
 
     import vsft.backends.hf as hf
     import vsft.train as tr
 
     t = inspect.getsource(tr.train)
-    assert "enable_a100_math()" in t and t.index("set_seed(t.seed)") < t.index(
-        "enable_a100_math()")
-    assert "enable_a100_math()" in inspect.getsource(hf.HFBackend.__init__)
+    assert "enable_tf32_math()" in t and t.index("set_seed(t.seed)") < t.index(
+        "enable_tf32_math()")
+    assert "enable_tf32_math()" in inspect.getsource(hf.HFBackend.__init__)
 
 
 # ------------------------------------------------------------- models needed by a config
@@ -445,7 +445,7 @@ def test_config_get_models(tmp_path, capsys):
     assert capsys.readouterr().out.splitlines() == ["s/small", "v/big"]
     main(["config-get", "models"])
     assert capsys.readouterr().out.splitlines() == ["Qwen/Qwen3.5-4B"]
-    p = ROOT / "configs" / "a100" / "math_qwen35.yaml"
+    p = ROOT / "configs" / "h100" / "math_qwen35.yaml"
     main(["config-get", "--config", str(p), "models"])
     lines = capsys.readouterr().out.splitlines()
     assert len(lines) == 2 and lines[1] == "Qwen/Qwen3.5-9B"

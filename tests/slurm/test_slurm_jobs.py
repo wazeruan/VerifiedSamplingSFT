@@ -172,14 +172,14 @@ def test_real_gpucheck_fails_preflight_on_mac(h):
 def test_real_boost_fails_preflight_with_fake_nvidia_smi(h):
     smi = h.bin / "nvidia-smi"
     smi.write_text("#!/bin/sh\necho 'index, name, memory.total [MiB], driver_version'\n"
-                   "echo '0, NVIDIA A100-SXM4-40GB, 40960 MiB, 535.00'\n")
+                   "echo '0, NVIDIA H100 80GB HBM3, 81920 MiB, 535.00'\n")
     smi.chmod(0o755)
     r = h.submit("boost", "--input", h.input, env=RUN)
     assert r.returncode == 1, r.stdout + r.stderr
     jid = h.sbatch_calls()[0]["job_id"]
     h.wait_job(jid)
     text = logs(h, jid)
-    assert "NVIDIA A100-SXM4-40GB" in text  # nvidia-smi ran inside the job
+    assert "NVIDIA H100 80GB HBM3" in text  # nvidia-smi ran inside the job
     assert "no CUDA device" in text and "not in the HF cache" in text
     assert status(h, "boost", "FAILED")["exit_code"] == 2
     assert status(h, "boost", "STARTED") is None

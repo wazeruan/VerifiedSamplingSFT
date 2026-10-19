@@ -29,7 +29,7 @@ def test_no_args_is_usage_error(h):
         (["boost", "--account", "a", "--bogus"], "unknown argument"),
         (["boost"], "--account is required"),
         (["boost", "--account", "a b"], "unexpected characters"),
-        (["boost", "--account", "a", "--gpus", "a100:9"], "--gpus"),
+        (["boost", "--account", "a", "--gpus", "h100:9"], "--gpus"),
         (["boost", "--account", "a", "--gpus", "2"], "--gpus"),
         (["boost", "--account", "a", "--mem", "128GB"], "--mem"),
         (["boost", "--account", "a", "--mem", "0G"], "--mem"),
@@ -117,7 +117,7 @@ def test_dry_run_pipeline(h):
         assert re.fullmatch(rf"{re.escape(run_dir)}/logs/{stage}-{TS_RE}-%j\.err",
                             _opt(argv, "--error"))
         if stage in ("boost", "train", "eval"):
-            assert _opt(argv, "--gpus-per-node") == "a100:1"
+            assert _opt(argv, "--gpus-per-node") == "h100:1"
             assert _opt(argv, "--mem") == "120G"
             assert _opt(argv, "--cpus-per-task") == "8"
         else:
@@ -132,9 +132,9 @@ def test_dry_run_pipeline(h):
 
 def test_dry_run_resources(h):
     r = h.submit("pipeline", "--dry-run", "--stages", "prepare,boost,train",
-                 "--train-gpus", "a100:4",
+                 "--train-gpus", "h100:4",
                  "--mem", "200G", "--cpu-mem", "16G", "--partition", "gpu",
-                 "--cpu-partition", "cpu", "--constraint", "a100_80", "--qos", "q",
+                 "--cpu-partition", "cpu", "--constraint", "h100_80", "--qos", "q",
                  "--time", "1-00:00:00", "--depend-on", "77:78")
     assert r.returncode == 0, r.stderr
     lines = _dry_lines(r.stdout)
@@ -142,9 +142,9 @@ def test_dry_run_resources(h):
     assert _opt(p, "--partition") == "cpu" and _opt(p, "--mem") == "16G"
     assert "--constraint" not in p and "--time" not in p and _opt(p, "--qos") == "q"
     assert _opt(p, "--dependency") == "afterok:77:78"
-    assert _opt(b, "--gpus-per-node") == "a100:1" and _opt(b, "--mem") == "200G"
-    assert _opt(lines["train"], "--gpus-per-node") == "a100:4"
-    assert _opt(b, "--partition") == "gpu" and _opt(b, "--constraint") == "a100_80"
+    assert _opt(b, "--gpus-per-node") == "h100:1" and _opt(b, "--mem") == "200G"
+    assert _opt(lines["train"], "--gpus-per-node") == "h100:4"
+    assert _opt(b, "--partition") == "gpu" and _opt(b, "--constraint") == "h100_80"
     assert _opt(b, "--time") == "1-00:00:00"
 
 
@@ -153,37 +153,37 @@ def test_dry_run_gpucheck_without_uv(h):
     r = h.submit("gpucheck", "--dry-run")
     assert r.returncode == 0, r.stderr
     argv = _dry_lines(r.stdout)["gpucheck"]
-    assert _opt(argv, "--gpus-per-node") == "a100:1"
+    assert _opt(argv, "--gpus-per-node") == "h100:1"
 
 
 @pytest.mark.parametrize("stage", ["pipeline", "compare"])
 def test_multi_gpu_gpus_refused_for_graphs(h, stage):
-    r = h.submit(stage, "--dry-run", "--gpus", "a100:2")
+    r = h.submit(stage, "--dry-run", "--gpus", "h100:2")
     assert r.returncode == 2 and "--train-gpus" in r.stderr
 
 
-@pytest.mark.parametrize("bad", ["4", "a100:9", "a100:0", "a100-2"])
+@pytest.mark.parametrize("bad", ["4", "h100:9", "h100:0", "h100-2"])
 def test_train_gpus_validated(h, bad):
     r = h.submit("train", "--dry-run", "--train-gpus", bad)
     assert r.returncode == 2 and "--train-gpus" in r.stderr
 
 
 def test_train_gpus_only_for_training(h):
-    r = h.submit("compare", "--dry-run", "--train-gpus", "a100:4")
+    r = h.submit("compare", "--dry-run", "--train-gpus", "h100:4")
     assert r.returncode == 0, r.stderr
     lines = _dry_lines(r.stdout)
     for stage, argv in lines.items():
-        want = "a100:4" if stage in ("train", "train_sft") else (
-            None if stage in ("setup", "prepare") else "a100:1")
+        want = "h100:4" if stage in ("train", "train_sft") else (
+            None if stage in ("setup", "prepare") else "h100:1")
         assert _opt(argv, "--gpus-per-node") == want, stage
-    r = h.submit("train", "--dry-run", "--gpus", "a100:2")  # single stage: allowed
+    r = h.submit("train", "--dry-run", "--gpus", "h100:2")  # single stage: allowed
     assert r.returncode == 0 and _opt(_dry_lines(r.stdout)["train"], "--gpus-per-node") == \
-        "a100:2"
+        "h100:2"
 
 
 # ------------------------------------------------------------------ separate verifier check
 def _cfg(h, verifier_line):
-    src = (h.project / "configs" / "a100" / "math_qwen35.yaml").read_text()
+    src = (h.project / "configs" / "h100" / "math_qwen35.yaml").read_text()
     out = re.sub(r"(?m)^(verifier:\n)  model: .*$", lambda m: m.group(1) + verifier_line, src)
     assert out != src or verifier_line in src
     p = h.root / "cfg.yaml"
@@ -194,7 +194,7 @@ def _cfg(h, verifier_line):
 def test_default_config_boost_needs_80gb(h):
     for stage in ("boost", "pipeline", "compare"):
         r = h.submit(stage, "--dry-run", min_gpu=False)
-        assert r.returncode == 2 and "80 GB A100" in r.stderr, (stage, r.stderr)
+        assert r.returncode == 2 and "80 GB H100" in r.stderr, (stage, r.stderr)
         r = h.submit(stage, "--dry-run", "--min-gpu-mem-gb", "79.5", min_gpu=False)
         assert r.returncode == 0, (stage, r.stderr)
     for stage in ("train", "eval_base", "gpucheck", "train_sft"):
@@ -215,5 +215,5 @@ def test_verifier_check_config_variants(h, line, ok):
 
 def test_verifier_check_before_claiming_run_dir(h):
     r = h.submit("boost", "--input", h.input, min_gpu=False)
-    assert r.returncode == 2 and "80 GB A100" in r.stderr
+    assert r.returncode == 2 and "80 GB H100" in r.stderr
     assert not (h.runs / "x").exists(), "rejected submission left a claimed run dir behind"

@@ -1,13 +1,13 @@
 # MATH L3-5 with Qwen3.5: student Qwen3.5-4B, verifier Qwen3.5-9B, LoRA SFT.
-# REQUIRES an 80 GB A100 (submit with --min-gpu-mem-gb 79): boosting serves both models
+# REQUIRES an 80 GB H100 (submit with --min-gpu-mem-gb 79): boosting serves both models
 # from one GPU (student 50% = 40 GB, verifier 35% = 28 GB; the 9B weights alone are ~19 GB),
 # and LoRA training's logits/loss over the 248k vocabulary need the headroom.
-# On a 40 GB A100 set `verifier.model: ""` (the student grades itself) and keep batch 1-2.
+# Set `verifier.model: ""` only if you want the student to grade its own candidates.
 # Paper hyperparameters: T=1856 max length, N_MCMC=10; SFT lr {5e-5,1e-5,5e-6},
 # epochs {1,2}, batch {16,32,64}, AdamW + cosine, grad clip 1.0.
 model:
   name_or_path: Qwen/Qwen3.5-4B
-  dtype: bfloat16           # A100 supports bf16
+  dtype: bfloat16           # H100 supports bf16
   max_model_len: 8192      # prompt = question + expert + growing prefix (+1856 new)
 backend:
   kind: vllm

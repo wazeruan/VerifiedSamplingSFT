@@ -195,9 +195,9 @@ def train(cfg, data_path: str | Path, out_dir: str | Path, resume_from: str | No
         dataloader_config=DataLoaderConfiguration(use_seedable_sampler=True, data_seed=t.seed),
     )
     set_seed(t.seed)
-    from vsft.hpc import enable_a100_math
+    from vsft.hpc import enable_tf32_math
 
-    enable_a100_math()
+    enable_tf32_math()
     tok = load_tokenizer(cfg.model.name_or_path, cfg.model.trust_remote_code)
 
     pairs = load_sft_pairs(data_path, t.source, t.include_fallbacks)

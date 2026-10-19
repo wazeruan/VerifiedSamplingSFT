@@ -5,7 +5,7 @@
 #   eval_base  untrained base model (config model)          label "base"
 # VSFT_EVAL_MODEL overrides the model for any of them.
 #SBATCH --job-name=vsft-eval
-#SBATCH --gpus-per-node=a100:1
+#SBATCH --gpus-per-node=h100:1
 #SBATCH --cpus-per-task=8
 #SBATCH --mem=120G
 #SBATCH --time=06:00:00

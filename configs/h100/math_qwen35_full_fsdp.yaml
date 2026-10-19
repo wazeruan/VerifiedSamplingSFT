@@ -1,9 +1,9 @@
 # Full-parameter SFT of Qwen3.5-4B (verifier: Qwen3.5-9B). Does NOT fit one GPU: fp32 master
 # weights + grads + AdamW for ~4.2B params is ~67 GB, plus ~10 GB of 248k-vocab logits/loss.
-# Train with FSDP on >= 2x A100-80GB:
-#   slurm/submit.sh train --gpus a100:2 --accelerate-config configs/accelerate/fsdp_a100.yaml \
+# Train with FSDP on >= 2x H100-80GB:
+#   slurm/submit.sh train --gpus h100:2 --accelerate-config configs/accelerate/fsdp_h100.yaml \
 #       --min-gpu-mem-gb 79 ...
-# Boosting (one GPU, both models) also needs an 80 GB A100.
+# Boosting (one GPU, both models) also needs an 80 GB H100.
 model:
   name_or_path: Qwen/Qwen3.5-4B
   dtype: bfloat16

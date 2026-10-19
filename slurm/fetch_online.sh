@@ -8,7 +8,7 @@
 # (e.g. a data-transfer node, or a login node if explicitly allowed). It does no GPU work.
 #
 #   slurm/fetch_online.sh --i-confirm-site-policy-allows-this \
-#       (--run-dir runs/NAME [--config configs/a100/math_qwen35.yaml] | --resume RUN_DIR) \
+#       (--run-dir runs/NAME [--config configs/h100/math_qwen35.yaml] | --resume RUN_DIR) \
 #       [--venv PATH] [--cache-root PATH] [--hf-home PATH] [--datasets "math math500 gsm8k"]
 set -Eeuo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -16,7 +16,7 @@ PROJECT_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
 usage() { sed -n '2,13p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'; }
 die() { echo "error: $*" >&2; exit 2; }
 
-CONFIRM=0 RUN_BASE="" RESUME="" CONFIG="configs/a100/math_qwen35.yaml" VENV="" CACHE_ROOT=""
+CONFIRM=0 RUN_BASE="" RESUME="" CONFIG="configs/h100/math_qwen35.yaml" VENV="" CACHE_ROOT=""
 HF_HOME_DIR="" DATASETS="math math500 gsm8k"
 while [[ $# -gt 0 ]]; do
   case "$1" in

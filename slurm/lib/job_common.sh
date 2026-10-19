@@ -183,7 +183,7 @@ vsft_preflight() {  # vsft_preflight [gpu] [--require-file F | --require-model M
   local args=(--run-dir "$VSFT_RUN_DIR" --stage "$VSFT_STAGE" --require-lock "$VSFT_CODE_DIR/uv.lock")
   if [[ "${1:-}" == "gpu" ]]; then
     shift
-    args+=(--require-gpu --require-bf16 --min-gpu-mem-gb "${VSFT_MIN_GPU_MEM_GB:-39}")
+    args+=(--require-gpu --require-bf16 --min-gpu-mem-gb "${VSFT_MIN_GPU_MEM_GB:-79}")
     if [[ -n "${VSFT_GPU_TYPE:-}" ]]; then args+=(--gpu-type "$VSFT_GPU_TYPE"); fi
     if [[ -n "${VSFT_GPU_CAPABILITY:-}" ]]; then args+=(--gpu-capability "$VSFT_GPU_CAPABILITY"); fi
     nvidia-smi --query-gpu=index,name,memory.total,driver_version --format=csv || true

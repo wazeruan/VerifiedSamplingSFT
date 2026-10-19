@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
-# GPU job: verify the allocation (A100, memory, CUDA, bf16) and the environment only.
+# GPU job: verify the allocation (H100, memory, CUDA, bf16) and the environment only.
 #SBATCH --job-name=vsft-gpucheck
-#SBATCH --gpus-per-node=a100:1
+#SBATCH --gpus-per-node=h100:1
 #SBATCH --cpus-per-task=2
 #SBATCH --mem=16G
 #SBATCH --time=00:15:00

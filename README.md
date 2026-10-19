@@ -56,8 +56,8 @@ src/vsft/
   train.py        Accelerate SFT (full or LoRA; DDP/FSDP via accelerate launch; resumable)
   evaluate.py     single-shot accuracy
   data.py         MATH L3–5 (8230/1024 split like the paper), MATH-500, GSM8K
-  hpc.py          in-allocation preflight (A100/bf16/memory), check-train, config-get
-configs/          smoke.yaml (laptop); a100/*.yaml (Slurm A100); accelerate/fsdp_a100.yaml
+  hpc.py          in-allocation preflight (H100/bf16/memory), check-train, config-get
+configs/          smoke.yaml (laptop); h100/*.yaml (Slurm H100); accelerate/fsdp_h100.yaml
 slurm/            submit.sh (wrapper), jobs/*.sbatch, status.sh, results.sh, remote.sh (SSH)
 ```
 
@@ -73,22 +73,22 @@ uv run vsft prepare math math500 gsm8k --out-dir data/processed
 ```
 
 ```bash
-uv run vsft boost --config configs/a100/math_qwen35.yaml --input data/processed/math_l345_train.jsonl --output data/boosted/math_qwen35.jsonl
+uv run vsft boost --config configs/h100/math_qwen35.yaml --input data/processed/math_l345_train.jsonl --output data/boosted/math_qwen35.jsonl
 ```
 
 ```bash
-uv run vsft train --config configs/a100/math_qwen35.yaml --data data/boosted/math_qwen35.jsonl --output-dir runs/sft-sampling
+uv run vsft train --config configs/h100/math_qwen35.yaml --data data/boosted/math_qwen35.jsonl --output-dir runs/sft-sampling
 ```
 
 ```bash
-uv run vsft eval --config configs/a100/math_qwen35.yaml --model runs/sft-sampling/final --data data/processed/math_l345_test.jsonl data/processed/math500_test.jsonl data/processed/gsm8k_test.jsonl --output-dir runs/sft-sampling/eval
+uv run vsft eval --config configs/h100/math_qwen35.yaml --model runs/sft-sampling/final --data data/processed/math_l345_test.jsonl data/processed/math500_test.jsonl data/processed/gsm8k_test.jsonl --output-dir runs/sft-sampling/eval
 ```
 
 - **Baseline SFT on the raw expert traces:** add `--set train.source=expert`. See [Comparison with plain SFT](#comparison-with-plain-sft) for the full side-by-side.
 - **Resume interrupted runs:** `boost` resumes automatically by skipping ids already in `--output`. For `train`, pass `--resume-from runs/<run>/state-epochN`.
 - **Override any config value:** `--set section.key=value`.
 
-Memory: Qwen3.5's 248k vocabulary makes the logits and loss the biggest training cost, so keep `per_device_batch_size` at 1–2 and raise `grad_accum_steps` instead. Full fine-tuning of Qwen3.5-4B (fp32 master weights + AdamW, about 67 GB) does not fit one A100; use FSDP on 2× A100-80GB (`configs/a100/math_qwen35_full_fsdp.yaml`).
+Memory: Qwen3.5's 248k vocabulary makes the logits and loss the biggest training cost, so keep `per_device_batch_size` at 1–2 and raise `grad_accum_steps` instead. Full fine-tuning of Qwen3.5-4B (fp32 master weights + AdamW, about 67 GB) does not fit one H100; use FSDP on 2× H100-80GB (`configs/h100/math_qwen35_full_fsdp.yaml`).
 
 ## Comparison with plain SFT
 
@@ -161,7 +161,7 @@ uv run vsft compare runs/eval
 
 Use `--label sampling` for the Sampling SFT model's eval.
 
-## Slurm / SSH on A100
+## Slurm / SSH on H100
 
 Every stage is a checked-in batch script under `slurm/jobs/`:
 
@@ -169,10 +169,10 @@ Every stage is a checked-in batch script under `slurm/jobs/`:
 |---|---|---|
 | setup | CPU | yes |
 | prepare | CPU | yes |
-| boost | A100 | no |
-| train | A100 | no |
-| eval | A100 | no |
-| gpucheck | A100 | no |
+| boost | H100 | no |
+| train | H100 | no |
+| eval | H100 | no |
+| gpucheck | H100 | no |
 
 You never call `sbatch` directly: `slurm/submit.sh` is a noninteractive wrapper (`--help`). The scripts are portable to bash 3.2 or newer.
 
@@ -197,7 +197,7 @@ You never call `sbatch` directly: `slurm/submit.sh` is a noninteractive wrapper 
 **Status markers** live under `status/` and never move backwards for a job:
 
 1. `SUBMITTED` — the wrapper has submitted the job.
-2. `PREFLIGHT_OK` — the in-allocation preflight passed: A100 with enough memory, CUDA and bf16 verified by a matmul, inputs present, the model available in the offline HF cache, and the venv built from the snapshot's `uv.lock`.
+2. `PREFLIGHT_OK` — the in-allocation preflight passed: H100 with enough memory, CUDA and bf16 verified by a matmul, inputs present, the model available in the offline HF cache, and the venv built from the snapshot's `uv.lock`.
 3. `STARTED` — written by the application itself once the vLLM engine or model has loaded.
 4. `SUCCEEDED` or `FAILED`.
 
@@ -288,31 +288,31 @@ slurm/remote.sh submit --host mycluster --remote-dir '~/vsft' -- pipeline --acco
 slurm/remote.sh status --host mycluster --remote-dir '~/vsft' /scratch/USER/vsft/math-qwen35
 ```
 
-### CUDA A100 specifics
+### CUDA H100 specifics
 
 - **Preflight**, inside the allocation and before anything runs, requires:
-  - an A100 (the name matches `--gpu-type A100`), compute capability 8.0 (`--gpu-capability 8.0`);
-  - a CUDA build of torch that ships `sm_80` kernels;
+  - an H100 (the name matches `--gpu-type H100`), compute capability 8.0 (`--gpu-capability 8.0`);
+  - a CUDA build of torch that ships `sm_90` kernels;
   - at least 39 GB of GPU memory, or `--min-gpu-mem-gb 79` for 80 GB cards;
   - working bf16 and TF32 matmuls on every allocated GPU.
 - **Recorded versions.** The NVIDIA driver, torch and CUDA versions are written to `status/<stage>.PREFLIGHT_OK`.
-- **Precision.** Models run in bf16 (`model.dtype: bfloat16`, `mixed_precision: bf16`). TF32 is enabled for the remaining fp32 matmuls (Ampere and newer). Attention uses PyTorch SDPA, which picks the flash/memory-efficient kernels on A100.
+- **Precision.** Models run in bf16 (`model.dtype: bfloat16`, `mixed_precision: bf16`). TF32 is enabled for the remaining fp32 matmuls (Ampere and newer). Attention uses PyTorch SDPA, which picks the flash/memory-efficient kernels on H100.
 - **CUDA driver.** The default PyPI torch wheels are built for CUDA 12. The node's NVIDIA driver must support that; preflight fails clearly if it doesn't.
 
 ### Resources and configs
 
-- `--mem` defaults to `120G` of host RAM. This fits a per-A100 share such as Narval's (about 124 GB and 12 cores per GPU); check your site's share.
-- `--gpus a100:N`, `--partition`, `--qos` and `--constraint` are all configurable. No site values are hard-coded.
+- `--mem` defaults to `120G` of host RAM. This fits a per-H100 share such as Narval's (about 124 GB and 12 cores per GPU); check your site's share.
+- `--gpus h100:N`, `--partition`, `--qos` and `--constraint` are all configurable. No site values are hard-coded.
 - Pick the config for your card:
-  - `configs/a100/math_qwen35.yaml`: LoRA SFT with the 4B student and 9B verifier. **Needs an 80 GB A100**, because boosting serves both models from one GPU. Submit with `--min-gpu-mem-gb 79`. On a 40 GB A100, set `verifier.model: ""` so the student grades itself.
-  - `configs/a100/math_qwen35_full_fsdp.yaml`: full SFT. Needs FSDP on 2× A100-80GB: `--gpus a100:2 --accelerate-config configs/accelerate/fsdp_a100.yaml --min-gpu-mem-gb 79`.
+  - `configs/h100/math_qwen35.yaml`: LoRA SFT with the 4B student and 9B verifier. **Needs an 80 GB H100**, because boosting serves both models from one GPU. Submit with `--min-gpu-mem-gb 79`. 
+  - `configs/h100/math_qwen35_full_fsdp.yaml`: full SFT. Needs FSDP on 2× H100-80GB: `--gpus h100:2 --accelerate-config configs/accelerate/fsdp_h100.yaml --min-gpu-mem-gb 79`.
 - The FSDP config wraps `Qwen3_5DecoderLayer`. For another model family, change `fsdp_transformer_layer_cls_to_wrap`.
-- `--gpus` sets the GPU request for every GPU stage. Boost and eval always use one GPU. For multi-GPU training inside `pipeline`/`compare`, use `--train-gpus a100:2`, which applies only to `train`/`train_sft`.
-- `submit.sh` refuses a config with a separate verifier unless `--min-gpu-mem-gb 79` is given, so a 40 GB node never wastes the queue wait.
+- `--gpus` sets the GPU request for every GPU stage. Boost and eval always use one GPU. For multi-GPU training inside `pipeline`/`compare`, use `--train-gpus h100:2`, which applies only to `train`/`train_sft`.
+- `submit.sh` refuses a config with a separate verifier unless `--min-gpu-mem-gb 79` is given, so a node with less than 80 GB never wastes the queue wait.
 
 **Before the first full run**, do two short checks on the real cluster:
 
-1. `gpucheck` verifies the A100, CUDA and bf16, and runs one `flash-linear-attention` kernel, the Qwen3.5 training path:
+1. `gpucheck` verifies the H100, CUDA and bf16, and runs one `flash-linear-attention` kernel, the Qwen3.5 training path:
 
    ```bash
    slurm/submit.sh gpucheck --account ACCOUNT --resume RUN_DIR --min-gpu-mem-gb 79

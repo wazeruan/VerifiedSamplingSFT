@@ -2,7 +2,7 @@
 # GPU job: verifier-guided boosting of expert traces. Resumable: rerunning skips finished ids;
 # on the USR1 time-limit warning it stops between batches (exit 75) without losing rows.
 #SBATCH --job-name=vsft-boost
-#SBATCH --gpus-per-node=a100:1
+#SBATCH --gpus-per-node=h100:1
 #SBATCH --cpus-per-task=8
 #SBATCH --mem=120G
 #SBATCH --time=24:00:00

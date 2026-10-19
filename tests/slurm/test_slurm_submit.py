@@ -48,7 +48,7 @@ def test_code_snapshot(h):
         assert (code / p).is_file(), p
     assert not list(code.rglob("__pycache__"))
     assert (run / "config.yaml").read_bytes() == (
-        h.project / "configs/a100/math_qwen35.yaml").read_bytes()
+        h.project / "configs/h100/math_qwen35.yaml").read_bytes()
     call = h.sbatch_calls()[0]
     assert call["script"] == str(code / "slurm/jobs/gpucheck.sbatch")
     assert _opt(call["argv"], "--chdir") == str(run)
@@ -388,7 +388,7 @@ def test_preempt_grace_bounds(h):
 
 
 def test_accelerate_config_snapshotted(h):
-    cfg = h.project / "configs" / "accelerate" / "fsdp_a100.yaml"
+    cfg = h.project / "configs" / "accelerate" / "fsdp_h100.yaml"
     r = h.submit("train", "--no-monitor", "--train-data", h.input, "--accelerate-config", cfg)
     assert r.returncode == 3, r.stderr
     run = h.runs / "x"

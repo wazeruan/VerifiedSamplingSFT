@@ -1,5 +1,5 @@
-# Multi-GPU full finetuning of Qwen3.5 (e.g. 4B on 2x A100-80GB): slurm/submit.sh train
-#   --gpus a100:2 --accelerate-config configs/accelerate/fsdp_a100.yaml
+# Multi-GPU full finetuning of Qwen3.5 (e.g. 4B on 2x H100-80GB): slurm/submit.sh train
+#   --gpus h100:2 --accelerate-config configs/accelerate/fsdp_h100.yaml
 # For a different model family, change fsdp_transformer_layer_cls_to_wrap to its decoder layer.
 compute_environment: LOCAL_MACHINE
 distributed_type: FSDP

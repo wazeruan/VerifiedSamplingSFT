@@ -129,7 +129,7 @@ class Harness:
         a = [stage]
         sargs = list(map(str, args))
         # The default config runs a separate verifier during boost, which submit.sh only
-        # accepts on 80 GB A100s; tests that are not about that check opt in to 79 GB.
+        # accepts on 80 GB H100s; tests that are not about that check opt in to 79 GB.
         if (min_gpu and stage in ("boost", "pipeline", "compare")
                 and "--min-gpu-mem-gb" not in sargs):
             a += ["--min-gpu-mem-gb", "79"]

@@ -192,8 +192,8 @@ def test_empty_override_value_is_not_empty_string():
         load_config(None, ["verifier.model="])
 
 
-@pytest.mark.parametrize("name", ["smoke.yaml", "a100/math_qwen35.yaml",
-                                  "a100/math_qwen35_full_fsdp.yaml"])
+@pytest.mark.parametrize("name", ["smoke.yaml", "h100/math_qwen35.yaml",
+                                  "h100/math_qwen35_full_fsdp.yaml"])
 def test_shipped_configs_load(name):
     from pathlib import Path
 
@@ -212,8 +212,8 @@ def test_shipped_configs_load(name):
 def test_old_config_names_gone():
     from pathlib import Path
 
-    a100 = Path(__file__).resolve().parents[1] / "configs" / "a100"
-    assert not list(a100.glob("*qwen3b*")) and not list(a100.glob("*full80g*"))
+    h100 = Path(__file__).resolve().parents[1] / "configs" / "h100"
+    assert not list(h100.glob("*qwen3b*")) and not list(h100.glob("*full80g*"))
 
 
 def test_backend_vllm_batching_fields():

@@ -80,7 +80,7 @@ def test_single_new_stage_dry_run(h, stage):
     argv = _dry(r.stdout)[stage]
     assert argv[-1].endswith(f"/slurm/jobs/{SCRIPT[stage]}.sbatch")
     assert _opt(argv, "--job-name") == f"vsft-{stage}"
-    assert _opt(argv, "--gpus-per-node") == "a100:1" and _opt(argv, "--mem") == "120G"
+    assert _opt(argv, "--gpus-per-node") == "h100:1" and _opt(argv, "--mem") == "120G"
 
 
 # ------------------------------------------------------------------ validation
