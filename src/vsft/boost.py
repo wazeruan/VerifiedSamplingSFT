@@ -113,6 +113,10 @@ def _finite(x: float | None) -> float | None:
     return round(x, 5) if x is not None and math.isfinite(x) else None
 
 
+class BoostStopped(Exception):
+    """A stop was requested mid-batch; the batch's partial results are discarded."""
+
+
 class Booster:
     def __init__(self, backend: Backend, boost_cfg, verifier_cfg):
         self.backend = backend
@@ -236,13 +240,17 @@ class Booster:
             s.prefix = w.response[: v.restart_char]
 
     # -- public API -----------------------------------------------------------------------
-    def boost(self, examples: list[Example]) -> list[BoostResult]:
+    def boost(self, examples: list[Example], should_stop=None) -> list[BoostResult]:
+        """Boost a batch. Raises BoostStopped (nothing emitted) if `should_stop()` turns
+        true between rounds, so the caller can exit and a rerun redoes the whole batch."""
         t0 = time.time()
         states = [_State(ex) for ex in examples]
         for r in range(self.cfg.max_rounds):
             active = [s for s in states if not s.done]
             if not active:
                 break
+            if should_stop is not None and should_stop():
+                raise BoostStopped
             self._round(active, r)
             log.info("round %d: %d/%d accepted", r, sum(s.accepted for s in states), len(states))
         elapsed = (time.time() - t0) / max(1, len(states))

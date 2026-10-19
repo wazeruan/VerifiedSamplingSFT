@@ -349,3 +349,125 @@ def test_no_sync_gate_source():
     src = inspect.getsource(tr.train)
     assert "use_no_sync = acc.distributed_type == DistributedType.MULTI_GPU" in src
     assert "acc.no_sync(model) if (use_no_sync and not last)" in src
+
+
+# ---------------------------------------------------------------- graceful stop (Slurm)
+
+
+def test_train_stop_file_then_resume(tmp_path, tiny_model, monkeypatch):
+    from vsft.cli import main
+
+    def args(out, *extra):
+        sets = ["--set", f"model.name_or_path={tiny_model}"]
+        for s in ("train.source=expert", "train.num_epochs=2", "train.per_device_batch_size=1",
+                  "train.grad_accum_steps=1", "train.log_every_steps=1", "train.max_seq_len=128",
+                  "train.learning_rate=1e-3", "train.gradient_checkpointing=false"):
+            sets += ["--set", s]
+        return ["train", "--data", str(FIXTURE), "--output-dir", str(out), *sets, *extra]
+
+    ref = tmp_path / "ref"
+    assert main(args(ref)) == 0
+    ref_hist = read_hist(ref)
+    assert [h["step"] for h in ref_hist] == [1, 2, 3, 4, 5, 6]
+
+    out = tmp_path / "run"
+    stop = tmp_path / "STOP"
+    stop.write_text("")
+    monkeypatch.setenv("VSFT_STOP_FILE", str(stop))
+    monkeypatch.setenv("VSFT_RUN_DIR", str(tmp_path / "jobs"))
+    monkeypatch.setenv("VSFT_STAGE", "train")
+    monkeypatch.setenv("SLURM_JOB_ID", "4242")
+    assert main(args(out)) == 75
+    st = json.loads((out / "STOPPED.json").read_text())
+    assert st["step"] == 1 and Path(st["state_dir"]) == out / "state-preempt-step1"
+    assert st["job_id"] == "4242"
+    state = json.loads((out / "state-preempt-step1" / "trainer_state.json").read_text())
+    assert (state["step"], state["epoch"], state["batches_in_epoch"]) == (1, 0, 1)
+    assert not (out / "final").exists() and not (out / "train_result.json").exists()
+    assert [h["step"] for h in read_hist(out)] == [1]
+    started = json.loads((tmp_path / "jobs" / "status" / "train.STARTED").read_text())
+    assert started["num_examples"] == 3
+
+    # stop file still there -> the resumed run stops again after one more step
+    assert main(args(out, "--resume-from", str(out / "state-preempt-step1"))) == 75
+    assert json.loads((out / "STOPPED.json").read_text())["step"] == 2
+
+    stop.unlink()
+    monkeypatch.setenv("SLURM_JOB_ID", "4243")
+    assert main(args(out, "--resume-from", str(out / "state-preempt-step2"))) == 0
+    assert not (out / "STOPPED.json").exists()  # a completed run is no longer stopped
+    assert json.loads((tmp_path / "jobs" / "status" / "train.STARTED").read_text())[
+        "job_id"] == "4243"
+    hist = read_hist(out)
+    assert [h["step"] for h in hist] == [1, 2, 3, 4, 5, 6]
+    assert json.loads((out / "train_result.json").read_text())["final_step"] == 6
+    # same data order and optimizer state as the uninterrupted run
+    for a, b in zip(hist, ref_hist, strict=True):
+        assert a["loss"] == pytest.approx(b["loss"], rel=1e-4)
+    from transformers import AutoModelForCausalLM
+
+    AutoModelForCausalLM.from_pretrained(out / "final")
+
+
+def test_stop_on_last_batch_of_epoch(tmp_path, tiny_model, monkeypatch):
+    """Stopping after the epoch's last batch resumes into the next epoch without loss."""
+    import vsft.hpc as hpc
+    from vsft.train import Stopped, train
+
+    calls = {"n": 0}
+
+    def stop_on_third():
+        calls["n"] += 1
+        return calls["n"] == 3
+
+    monkeypatch.setattr(hpc, "stop_requested", stop_on_third)
+    cfg = _cfg(tiny_model, "train.num_epochs=2")
+    with pytest.raises(Stopped) as ei:
+        train(cfg, FIXTURE, tmp_path)
+    assert ei.value.state_dir == tmp_path / "state-preempt-step3"
+    state = json.loads((ei.value.state_dir / "trainer_state.json").read_text())
+    assert (state["step"], state["epoch"], state["batches_in_epoch"]) == (3, 0, 3)
+    monkeypatch.setattr(hpc, "stop_requested", lambda: False)
+    train(cfg, FIXTURE, tmp_path, str(ei.value.state_dir))
+    assert [h["step"] for h in read_hist(tmp_path)] == [1, 2, 3, 4, 5, 6]
+    assert [h["epoch"] for h in read_hist(tmp_path)] == [0, 0, 0, 1, 1, 1]
+
+
+def test_started_written_after_first_optimizer_step(tmp_path, tiny_model, monkeypatch):
+    import vsft.hpc as hpc
+    from vsft.train import train
+
+    monkeypatch.setenv("VSFT_RUN_DIR", str(tmp_path / "jobs"))
+    monkeypatch.setenv("VSFT_STAGE", "train")
+    marker = tmp_path / "jobs" / "status" / "train.STARTED"
+    seen = []
+    real = hpc.notify_started
+
+    def spy(**info):
+        # history is appended after the step that triggered STARTED
+        hist = tmp_path / "run" / "train_history.jsonl"
+        seen.append((info, hist.exists()))
+        real(**info)
+
+    monkeypatch.setattr(hpc, "notify_started", spy)
+    train(_cfg(tiny_model), FIXTURE, tmp_path / "run")
+    assert len(seen) == 1 and seen[0][0]["num_examples"] == 3
+    assert seen[0][1] is False  # before step 1 was logged, but after its optimizer step
+    assert marker.is_file()
+
+
+def test_no_started_when_first_step_fails(tmp_path, tiny_model, monkeypatch):
+    import vsft.hpc as hpc
+    from vsft.train import train
+
+    monkeypatch.setenv("VSFT_RUN_DIR", str(tmp_path / "jobs"))
+    monkeypatch.setenv("VSFT_STAGE", "train")
+
+    def boom(self, *a, **kw):
+        raise RuntimeError("simulated OOM in step")
+
+    monkeypatch.setattr(torch.optim.AdamW, "step", boom)
+    with pytest.raises(RuntimeError, match="simulated OOM"):
+        train(_cfg(tiny_model), FIXTURE, tmp_path / "run")
+    assert not (tmp_path / "jobs" / "status" / "train.STARTED").exists()
+    del hpc

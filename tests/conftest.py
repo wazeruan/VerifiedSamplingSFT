@@ -7,6 +7,27 @@ import pytest
 FIXTURE = Path(__file__).parent / "fixtures" / "tiny_math.jsonl"
 
 
+_JOB_ENV = ("VSFT_STOP_FILE", "VSFT_RUN_DIR", "VSFT_STAGE", "VSFT_RECEIPT_PY",
+            "VSFT_STOPPED_RECORD", "SLURM_JOB_ID", "RANK", "LOCAL_RANK")
+
+
+@pytest.fixture(autouse=True)
+def _isolate_job_env(monkeypatch):
+    """Tests never inherit Slurm/stop-file settings from the calling shell, never leak the
+    in-process stop flag, and never leave cli.main's SIGTERM handler installed."""
+    import signal
+
+    import vsft.hpc
+
+    for k in _JOB_ENV:
+        monkeypatch.delenv(k, raising=False)
+    vsft.hpc._STOP_FLAG = False
+    old = signal.getsignal(signal.SIGTERM)
+    yield
+    signal.signal(signal.SIGTERM, old)
+    vsft.hpc._STOP_FLAG = False
+
+
 def pytest_configure(config):
     config.addinivalue_line(
         "markers", "slow: real-model integration test (run with VSFT_RUN_SLOW=1)"

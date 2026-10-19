@@ -213,3 +213,192 @@ def test_cli_prepare_dispatch(tmp_path, monkeypatch):
     monkeypatch.setitem(data_mod.PREPARERS, "math500", lambda d: calls.append(("m5", d)) or 2)
     assert main(["prepare", "gsm8k", "math500", "--out-dir", str(tmp_path)]) == 0
     assert calls == [("gsm8k", tmp_path), ("m5", tmp_path)]
+
+
+# ------------------------------------------------------------ Slurm stop / STARTED hooks
+
+
+def test_boost_stops_after_first_batch_and_resumes(tmp_path, monkeypatch):
+    from vsft.cli import EXIT_STOPPED
+
+    stop = tmp_path / "STOP"
+    monkeypatch.setenv("VSFT_STOP_FILE", str(stop))
+    refs = {r["question"]: r["answer"] for r in read_jsonl(FIXTURE)}
+    asked = []
+
+    def propose(q, prefix, r):
+        asked.append(q)
+        stop.write_text("")  # the job script asks to stop while batch 1 is running
+        return [(f"So \\boxed{{{refs[q]}}}.", True)] * 2
+
+    monkeypatch.setattr(
+        base_mod, "build_backend", lambda m, b: FakeBackend(propose, lambda q, s: ACCEPT)
+    )
+    out = tmp_path / "out.jsonl"
+    assert EXIT_STOPPED == 75
+    assert run(FIXTURE, out, "--set", "boost.examples_per_batch=1") == 75
+    assert [r["id"] for r in read_jsonl(out)] == ["t1"]  # batch 1 finished and was kept
+    assert len(asked) == 1
+    assert not (tmp_path / "out.summary.json").exists()
+    # stop file still present: a rerun stops before doing anything new
+    assert run(FIXTURE, out, "--set", "boost.examples_per_batch=1") == 75
+    assert [r["id"] for r in read_jsonl(out)] == ["t1"]
+    # cleared: the rerun resumes and completes
+    stop.unlink()
+    monkeypatch.setattr(
+        base_mod, "build_backend",
+        lambda m, b: FakeBackend(lambda q, p, r: [(f"So \\boxed{{{refs[q]}}}.", True)] * 2,
+                                 lambda q, s: ACCEPT),
+    )
+    assert run(FIXTURE, out, "--set", "boost.examples_per_batch=1") == 0
+    assert [r["id"] for r in read_jsonl(out)] == ["t1", "t2", "t3"]
+    assert json.loads((tmp_path / "out.summary.json").read_text())["num_rows"] == 3
+
+
+def test_boost_and_eval_notify_started(tmp_path, monkeypatch, fake):
+    monkeypatch.setenv("VSFT_RUN_DIR", str(tmp_path / "runs"))
+    monkeypatch.setenv("VSFT_STAGE", "boost")
+    run(FIXTURE, tmp_path / "o.jsonl")
+    m = json.loads((tmp_path / "runs" / "status" / "boost.STARTED").read_text())
+    assert m["todo"] == 3
+    # nothing left to do -> no backend is built, but STARTED is still recorded (todo=0)
+    (tmp_path / "runs" / "status" / "boost.STARTED").unlink()
+    n_backends = len(fake)
+    run(FIXTURE, tmp_path / "o.jsonl")
+    assert json.loads((tmp_path / "runs" / "status" / "boost.STARTED").read_text())["todo"] == 0
+    assert len(fake) == n_backends
+
+    monkeypatch.setenv("VSFT_STAGE", "eval")
+    monkeypatch.setattr(FakeBackend, "generate",
+                        lambda self, p, n, temperature, top_p, max_tokens:
+                        [[__import__("vsft.backends.base", fromlist=["G"]).Generation("x", True)]
+                         for _ in p])
+    main(["eval", "--model", "m/x", "--data", str(FIXTURE), "--output-dir", str(tmp_path / "ev")])
+    m = json.loads((tmp_path / "runs" / "status" / "eval.STARTED").read_text())
+    assert m["model"] == "m/x"
+
+
+def test_boost_stops_mid_batch_between_rounds(tmp_path, monkeypatch):
+    stop = tmp_path / "STOP"
+    record = tmp_path / "stopped.json"
+    monkeypatch.setenv("VSFT_STOP_FILE", str(stop))
+    monkeypatch.setenv("VSFT_STOPPED_RECORD", str(record))
+    monkeypatch.setenv("SLURM_JOB_ID", "555")
+    rounds = []
+
+    def propose(q, prefix, r):
+        rounds.append((q, r))
+        if len(rounds) == 1:
+            stop.write_text("")  # arrives while round 0 of the first batch is running
+        return [("Work.\nSo \\boxed{0}.", True)] * 2
+
+    # reject in round 0 so the batch needs a round 1: the stop is seen before it
+    monkeypatch.setattr(
+        base_mod, "build_backend", lambda m, b: FakeBackend(propose, lambda q, s: reject_at(1))
+    )
+    out = tmp_path / "out.jsonl"
+    assert run(FIXTURE, out, "--set", "boost.examples_per_batch=3") == 75
+    assert len(rounds) == 3 and {r for _, r in rounds} == {0}  # one round, then stopped
+    assert not out.exists() or list(read_jsonl(out)) == []  # nothing emitted for the batch
+    rec = json.loads(record.read_text())
+    assert rec == {"job_id": "555", "written": 0, "total": 3}
+    assert not (tmp_path / "out.summary.json").exists()
+
+    stop.unlink()
+    record.unlink()
+    rounds.clear()
+    rounds.append(("sentinel", -1))  # keep the hook from creating the stop file again
+    assert run(FIXTURE, out, "--set", "boost.examples_per_batch=3") == 0
+    assert [r["id"] for r in read_jsonl(out)] == ["t1", "t2", "t3"]
+    assert not record.exists()
+
+
+def test_boost_stop_record_counts_written_batches(tmp_path, monkeypatch):
+    stop = tmp_path / "STOP"
+    record = tmp_path / "stopped.json"
+    monkeypatch.setenv("VSFT_STOP_FILE", str(stop))
+    monkeypatch.setenv("VSFT_STOPPED_RECORD", str(record))
+    calls = []
+
+    def propose(q, prefix, r):
+        calls.append(q)
+        if len(calls) == 2:  # during batch 2 (round 0)
+            stop.write_text("")
+        return [("So \\boxed{0}.", True)] * 2
+
+    monkeypatch.setattr(
+        base_mod, "build_backend", lambda m, b: FakeBackend(propose, lambda q, s: reject_at(1))
+    )
+    out = tmp_path / "out.jsonl"
+    assert run(FIXTURE, out, "--set", "boost.examples_per_batch=1") == 75
+    assert [r["id"] for r in read_jsonl(out)] == ["t1"]
+    assert json.loads(record.read_text()) == {"job_id": None, "written": 1, "total": 3}
+
+
+def test_boost_stopped_raised_by_booster(tmp_path):
+    from fakes import boost_cfg, verifier_cfg
+
+    from vsft.boost import Booster, BoostStopped, Example
+
+    be = FakeBackend(lambda q, p, r: [("x", True)], lambda q, s: reject_at(1))
+    b = Booster(be, boost_cfg(num_candidates=1, max_rounds=3), verifier_cfg())
+    exs = [Example("a", "q", "e", "1")]
+    checks = iter([False, True])
+    with pytest.raises(BoostStopped):
+        b.boost(exs, should_stop=lambda: next(checks))
+    assert len(be.proposal_calls) == 1
+    # never consulted after every example is done
+    be2 = FakeBackend(lambda q, p, r: [("\\boxed{1}", True)], lambda q, s: ACCEPT)
+    b2 = Booster(be2, boost_cfg(num_candidates=1, max_rounds=3), verifier_cfg())
+    seen = []
+    [res] = b2.boost(exs, should_stop=lambda: seen.append(1) or False)
+    assert res.status == "accepted" and len(seen) == 1
+
+
+def test_main_installs_term_handler_only_in_stage(tmp_path, monkeypatch, fake):
+    import signal
+
+    import vsft.hpc as hpc
+
+    run(FIXTURE, tmp_path / "a.jsonl")
+    assert signal.getsignal(signal.SIGTERM) is signal.SIG_DFL
+    monkeypatch.setenv("VSFT_STAGE", "boost")
+    run(FIXTURE, tmp_path / "b.jsonl")
+    assert signal.getsignal(signal.SIGTERM) is hpc.request_stop
+    # (the autouse fixture restores the original handler in teardown)
+
+
+def test_term_handler_per_subcommand(tmp_path, monkeypatch):
+    """With VSFT_STAGE set, train/boost install the handler; eval/prepare keep SIG_DFL."""
+    import signal
+
+    import vsft.data as data_mod
+    import vsft.hpc as hpc
+    import vsft.train as train_mod
+    from vsft.backends.base import Generation
+
+    monkeypatch.setenv("VSFT_STAGE", "x")
+    assert signal.getsignal(signal.SIGTERM) is signal.SIG_DFL
+
+    monkeypatch.setattr(base_mod, "build_backend", lambda m, b: FakeBackend(
+        lambda *a: [], lambda *a: ACCEPT))
+    monkeypatch.setattr(FakeBackend, "generate", lambda self, p, n, temperature, top_p,
+                        max_tokens: [[Generation("\\boxed{1}", True)] for _ in p])
+    assert main(["eval", "--data", str(FIXTURE), "--output-dir", str(tmp_path / "ev")]) == 0
+    assert signal.getsignal(signal.SIGTERM) is signal.SIG_DFL
+
+    monkeypatch.setitem(data_mod.PREPARERS, "gsm8k", lambda d: 0)
+    assert main(["prepare", "gsm8k", "--out-dir", str(tmp_path)]) == 0
+    assert signal.getsignal(signal.SIGTERM) is signal.SIG_DFL
+
+    handler_during_train = []
+    monkeypatch.setattr(train_mod, "train", lambda cfg, d, o, r: handler_during_train.append(
+        signal.getsignal(signal.SIGTERM)) or Path(o) / "final")
+    assert main(["train", "--data", str(FIXTURE), "--output-dir", str(tmp_path / "t")]) == 0
+    assert handler_during_train == [hpc.request_stop]
+    signal.signal(signal.SIGTERM, signal.SIG_DFL)
+
+    monkeypatch.setattr(base_mod, "build_backend", lambda m, b: FakeBackend(
+        lambda q, p, r: [("\\boxed{1}", True)] * 2, lambda *a: ACCEPT))
+    assert run(FIXTURE, tmp_path / "b.jsonl") == 0
+    assert signal.getsignal(signal.SIGTERM) is hpc.request_stop

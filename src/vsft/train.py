@@ -161,6 +161,9 @@ def train(cfg, data_path: str | Path, out_dir: str | Path, resume_from: str | No
         dataloader_config=DataLoaderConfiguration(use_seedable_sampler=True, data_seed=t.seed),
     )
     set_seed(t.seed)
+    from vsft.hpc import enable_a100_math
+
+    enable_a100_math()
     tok = load_tokenizer(cfg.model.name_or_path, cfg.model.trust_remote_code)
 
     pairs = load_sft_pairs(data_path, t.source, t.include_fallbacks)
@@ -201,6 +204,9 @@ def train(cfg, data_path: str | Path, out_dir: str | Path, resume_from: str | No
         model = get_peft_model(model, lora_cfg)
 
     model, loader = acc.prepare(model, loader)
+    from vsft.hpc import notify_started, record_stopped, stop_requested
+
+    started_notified = False
     # Optimizer is created on the prepared (possibly FSDP-flattened) parameters.
     trainable = [p for p in model.parameters() if p.requires_grad]
     opt = acc.prepare_optimizer(
@@ -374,6 +380,12 @@ def train(cfg, data_path: str | Path, out_dir: str | Path, resume_from: str | No
             sched.step()
             opt.zero_grad(set_to_none=True)
             step += 1
+            if not started_notified:
+                # STARTED only after a full optimizer step: model load, first forward/backward
+                # (where OOMs show up) and the optimizer step all succeeded.
+                started_notified = True
+                if acc.is_main_process:
+                    notify_started(num_examples=len(items), num_processes=acc.num_processes)
             window_losses.append(mean_loss)
             if step % t.log_every_steps == 0:
                 rec = {
@@ -392,15 +404,34 @@ def train(cfg, data_path: str | Path, out_dir: str | Path, resume_from: str | No
                 acc.print(json.dumps(rec))
             if t.save_every_steps and step % t.save_every_steps == 0:
                 save_state(epoch, batches_done, f"step{step}")
+            # Graceful stop: any rank seeing the stop file makes all ranks checkpoint + exit.
+            flag = torch.tensor(float(stop_requested()), device=acc.device)
+            if acc.reduce(flag, reduction="sum").item() > 0:
+                tag = f"preempt-step{step}"
+                save_state(epoch, batches_done, tag)
+                if acc.is_main_process:
+                    record_stopped(
+                        out / "STOPPED.json", step=step, state_dir=str(out / f"state-{tag}")
+                    )
+                raise Stopped(out / f"state-{tag}")
         save_state(epoch + 1, 0, f"epoch{epoch + 1}")
         save_model(out / f"checkpoint-epoch{epoch + 1}")  # LoRA: adapter only
     save_model(out / "final", merge_lora=True)
     if acc.is_main_process:
+        (out / "STOPPED.json").unlink(missing_ok=True)  # a completed run is no longer stopped
         write_json_atomic(
             out / "train_result.json",
             {"final_step": step, "elapsed_s": round(time.time() - t0, 1), **asdict(cfg.train)},
         )
     return out / "final"
+
+
+class Stopped(Exception):
+    """Training stopped on request after saving a resumable state."""
+
+    def __init__(self, state_dir: Path):
+        super().__init__(str(state_dir))
+        self.state_dir = state_dir
 
 
 def _rotate_states(out: Path, keep_last: int, keep: Path) -> None:

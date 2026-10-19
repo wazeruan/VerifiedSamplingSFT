@@ -1,0 +1,17 @@
+# Multi-GPU full finetuning (e.g. 7B on 4x A100-80GB): slurm/submit.sh train --gpus a100:4
+#   --accelerate-config configs/accelerate/fsdp_a100.yaml
+compute_environment: LOCAL_MACHINE
+distributed_type: FSDP
+mixed_precision: bf16
+num_machines: 1
+fsdp_config:
+  fsdp_version: 1
+  fsdp_auto_wrap_policy: TRANSFORMER_BASED_WRAP
+  fsdp_sharding_strategy: FULL_SHARD
+  # Resumable state is saved sharded (no rank-0 gather of optimizer state); the final
+  # model export still gathers a full state dict.
+  fsdp_state_dict_type: SHARDED_STATE_DICT
+  fsdp_use_orig_params: true      # required for LoRA (frozen + trainable params)
+  fsdp_cpu_ram_efficient_loading: true
+  fsdp_sync_module_states: true
+  fsdp_offload_params: false

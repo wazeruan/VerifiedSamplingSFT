@@ -10,6 +10,8 @@ from pathlib import Path
 
 from vsft.config import load_config
 
+EXIT_STOPPED = 75  # graceful stop on request (preemption / time-limit warning); resumable
+
 
 def _common(p: argparse.ArgumentParser) -> None:
     p.add_argument("--config", type=Path, help="YAML config file")
@@ -43,11 +45,26 @@ def cmd_boost(args) -> int:
     logging.info(
         "boost: %d examples, %d already done, %d to go", len(examples), len(done), len(todo)
     )
-    if todo:
+    from vsft.boost import BoostStopped
+    from vsft.hpc import notify_started, record_stopped, stop_requested
+
+    if not todo:
+        notify_started(todo=0)
+    else:
         booster = Booster(build_backend(cfg.model, cfg.backend), cfg.boost, cfg.verifier)
+        notify_started(todo=len(todo))
         bs = cfg.boost.examples_per_batch
         for i in range(0, len(todo), bs):
-            results = booster.boost(todo[i : i + bs])
+            try:
+                if stop_requested():
+                    raise BoostStopped
+                # Also checked between verification rounds: a 256-example batch can take
+                # longer than the preemption grace period.
+                results = booster.boost(todo[i : i + bs], should_stop=stop_requested)
+            except BoostStopped:
+                logging.warning("boost: stop requested; %d/%d written, rerun resumes", i, len(todo))
+                record_stopped(written=i, total=len(todo))
+                return EXIT_STOPPED
             append_jsonl(out, (r.to_dict() for r in results))
             logging.info("boost: wrote %d/%d", min(i + bs, len(todo)), len(todo))
     # Summary over the whole output file.
@@ -95,7 +112,13 @@ def cmd_train(args) -> int:
     cfg = load_config(args.config, args.overrides)
     if args.resume_from and not (Path(args.resume_from) / "trainer_state.json").exists():
         raise SystemExit(f"--resume-from {args.resume_from} has no trainer_state.json")
-    final = train(cfg, args.data, args.output_dir, args.resume_from)
+    from vsft.train import Stopped
+
+    try:
+        final = train(cfg, args.data, args.output_dir, args.resume_from)
+    except Stopped as e:
+        logging.warning("train: stop requested; resumable state saved at %s", e.state_dir)
+        return EXIT_STOPPED
     logging.info("train: final model at %s", final)
     return 0
 
@@ -108,6 +131,9 @@ def cmd_eval(args) -> int:
     if args.model:
         cfg.model.name_or_path = str(args.model)
     backend = build_backend(cfg.model, cfg.backend)
+    from vsft.hpc import notify_started
+
+    notify_started(model=cfg.model.name_or_path)
     results = {}
     for data in args.data:
         m = evaluate(backend, data, args.output_dir, cfg.eval, args.limit)
@@ -160,6 +186,13 @@ def build_parser() -> argparse.ArgumentParser:
 
 def main(argv: list[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
+    from vsft.hpc import install_term_handler
+
+    # Slurm sends SIGTERM to every process in the job on scancel/preemption/time limit:
+    # for the stages that poll the stop flag, turn it into a graceful stop request. Other
+    # commands keep the default action so scancel stops them promptly.
+    if args.cmd in {"train", "boost"}:
+        install_term_handler()
     logging.basicConfig(
         level=logging.DEBUG if args.verbose else logging.INFO,
         format="%(asctime)s %(levelname)s %(name)s: %(message)s",

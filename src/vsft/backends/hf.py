@@ -66,6 +66,9 @@ class HFBackend(Backend):
                 model = model.to(self.device)
         self.model = model
         self.model.eval()
+        from vsft.hpc import enable_a100_math
+
+        enable_a100_math()
         self.max_len = model_cfg.max_model_len
         self.gen_bs = backend_cfg.gen_batch_size
         self.score_bs = backend_cfg.score_batch_size

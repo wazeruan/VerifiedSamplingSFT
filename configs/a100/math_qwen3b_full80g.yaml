@@ -1,0 +1,27 @@
+# Full-parameter SFT of Qwen2.5-3B on one 80 GB A100 (fp32 master weights + AdamW ~48 GB
+# plus activations). Submit with: --min-gpu-mem-gb 79
+model:
+  name_or_path: Qwen/Qwen2.5-3B
+  dtype: bfloat16
+  max_model_len: 8192      # prompt = question + expert + growing prefix (+1856 new)
+backend:
+  kind: vllm
+  gpu_memory_utilization: 0.85
+boost:
+  num_candidates: 8
+  max_rounds: 6
+  max_new_tokens: 1856
+  examples_per_batch: 256
+train:
+  learning_rate: 1.0e-5
+  num_epochs: 2
+  per_device_batch_size: 2
+  grad_accum_steps: 16      # effective batch 32
+  max_seq_len: 2048
+  param_dtype: float32
+  mixed_precision: bf16
+  gradient_checkpointing: true
+  save_every_steps: 200
+eval:
+  max_new_tokens: 2048
+  batch_size: 256
