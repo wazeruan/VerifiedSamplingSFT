@@ -125,8 +125,14 @@ class Harness:
                               cwd=cwd or self.root)
 
     def submit(self, stage, *args, account="def-test", run_dir="x", env=None, timeout=400,
-               min_free=True, venv=True):
+               min_free=True, venv=True, min_gpu=True):
         a = [stage]
+        sargs = list(map(str, args))
+        # The default config runs a separate verifier during boost, which submit.sh only
+        # accepts on 80 GB A100s; tests that are not about that check opt in to 79 GB.
+        if (min_gpu and stage in ("boost", "pipeline", "compare")
+                and "--min-gpu-mem-gb" not in sargs):
+            a += ["--min-gpu-mem-gb", "79"]
         if venv is True and "--venv" not in map(str, args):
             a += ["--venv", str(self.venv)]
         elif venv not in (True, False, None):
@@ -138,6 +144,14 @@ class Harness:
         if min_free:
             a += ["--min-free-gb", "1"]
         return self.run("submit.sh", *a, *args, env=env, timeout=timeout)
+
+    @staticmethod
+    def make_test_sets(run):
+        d = Path(run) / "data"
+        d.mkdir(parents=True, exist_ok=True)
+        for n in ("math_l345_test", "math500_test", "gsm8k_test"):
+            (d / f"{n}.jsonl").write_text('{"id": 1}\n')
+        return d
 
     # -------------------------------------------------------------- job script overrides
     def job_script(self, stage, body):

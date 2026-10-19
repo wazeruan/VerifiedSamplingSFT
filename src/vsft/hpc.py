@@ -277,7 +277,11 @@ def cmd_preflight(a) -> int:
 def cmd_config_get(a) -> int:
     from vsft.config import load_config
 
-    obj = load_config(a.config, a.overrides)
+    cfg = load_config(a.config, a.overrides)
+    if a.key == "models":  # one per line: student, then the verifier if separate
+        print("\n".join(config_models(cfg)))
+        return 0
+    obj = cfg
     for part in a.key.split("."):
         obj = getattr(obj, part)
     print(obj)
@@ -289,16 +293,25 @@ def cmd_download_model(a) -> int:
 
     from vsft.config import load_config
 
-    name = a.model or load_config(a.config, a.overrides).model.name_or_path
-    if Path(name).exists():
-        print(f"model {name} is a local path; nothing to download")
-        return 0
-    path = snapshot_download(
-        name,
-        allow_patterns=["*.json", "*.safetensors", "*.model", "*.txt", "*.jinja", "*.tiktoken"],
-    )
-    print(f"downloaded {name} -> {path}")
+    names = [a.model] if a.model else config_models(load_config(a.config, a.overrides))
+    for name in names:
+        if Path(name).exists():
+            print(f"model {name} is a local path; nothing to download")
+            continue
+        path = snapshot_download(
+            name,
+            allow_patterns=["*.json", "*.safetensors", "*.model", "*.txt", "*.jinja", "*.tiktoken"],
+        )
+        print(f"downloaded {name} -> {path}")
     return 0
+
+
+def config_models(cfg) -> list[str]:
+    """Every model a run needs: the student, plus the verifier when it is a separate model."""
+    names = [cfg.model.name_or_path]
+    if cfg.verifier.model and cfg.verifier.model not in names:
+        names.append(cfg.verifier.model)
+    return names
 
 
 def cmd_check_train(a) -> int:
@@ -336,6 +349,60 @@ def cmd_check_train(a) -> int:
     return 0
 
 
+def cmd_fla_check(_a) -> int:
+    """Launch one flash-linear-attention Gated-DeltaNet kernel on the GPU (Qwen3.5 path)."""
+    import torch
+
+    if not torch.cuda.is_available():
+        print("FLA CHECK FAILED: no CUDA device", file=sys.stderr)
+        return 2
+    try:
+        import fla
+        from fla.ops.gated_delta_rule import chunk_gated_delta_rule
+    except ImportError as e:
+        print(f"FLA CHECK FAILED: cannot import flash-linear-attention: {e}", file=sys.stderr)
+        return 2
+    b, t, h, d = 1, 128, 2, 64
+    dev, dt = "cuda", torch.bfloat16
+    q = torch.nn.functional.normalize(torch.randn(b, t, h, d, device=dev), dim=-1).to(dt)
+    k = torch.nn.functional.normalize(torch.randn(b, t, h, d, device=dev), dim=-1).to(dt)
+    v = torch.randn(b, t, h, d, device=dev, dtype=dt)
+    g = -torch.nn.functional.softplus(torch.randn(b, t, h, device=dev)).to(dt)  # log decay
+    beta = torch.sigmoid(torch.randn(b, t, h, device=dev)).to(dt)
+    try:
+        out = chunk_gated_delta_rule(q, k, v, g, beta)
+        o = out[0] if isinstance(out, tuple) else out
+        torch.cuda.synchronize()
+    except Exception as e:  # noqa: BLE001 - report any kernel/compile failure clearly
+        print(f"FLA CHECK FAILED: kernel launch error: {type(e).__name__}: {e}", file=sys.stderr)
+        return 2
+    if not torch.isfinite(o.float()).all():
+        print("FLA CHECK FAILED: non-finite kernel output", file=sys.stderr)
+        return 2
+    print(f"fla {getattr(fla, '__version__', '?')}: chunk_gated_delta_rule OK on {dev}")
+    return 0
+
+
+def gpu_memory_used() -> str | None:
+    """'used/total MiB' per GPU from nvidia-smi (covers vLLM engine-core subprocesses)."""
+    import shutil
+    import subprocess
+
+    if not shutil.which("nvidia-smi"):
+        return None
+    try:
+        out = subprocess.run(
+            ["nvidia-smi", "--query-gpu=index,memory.used,memory.total", "--format=csv,noheader"],
+            capture_output=True,
+            text=True,
+            timeout=30,
+            check=False,
+        ).stdout.strip()
+    except (OSError, subprocess.SubprocessError):
+        return None
+    return out.replace("\n", "; ") or None
+
+
 def _stamp(lock: str) -> int:
     (Path(sys.prefix) / LOCK_STAMP).write_text(_sha256(Path(lock)) + "\n")
     print(f"stamped {sys.prefix} with {lock}")
@@ -368,6 +435,9 @@ def main(argv=None) -> int:
         else:
             c.add_argument("--model")
         c.set_defaults(func=fn)
+
+    fc = sub.add_parser("fla-check", help="run one flash-linear-attention kernel on the GPU")
+    fc.set_defaults(func=cmd_fla_check)
 
     st = sub.add_parser("stamp-lock", help="record the uv.lock hash in the current venv")
     st.add_argument("--lock", required=True)

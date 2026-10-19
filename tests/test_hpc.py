@@ -424,3 +424,178 @@ def test_enable_a100_math_is_wired_in():
     assert "enable_a100_math()" in t and t.index("set_seed(t.seed)") < t.index(
         "enable_a100_math()")
     assert "enable_a100_math()" in inspect.getsource(hf.HFBackend.__init__)
+
+
+# ------------------------------------------------------------- models needed by a config
+
+
+def test_config_models():
+    from vsft.config import load_config
+
+    assert hpc.config_models(load_config()) == ["Qwen/Qwen3.5-4B"]
+    assert hpc.config_models(load_config(None, ["verifier.model=Qwen/Qwen3.5-9B"])) == [
+        "Qwen/Qwen3.5-4B", "Qwen/Qwen3.5-9B"]
+    assert hpc.config_models(load_config(None, ["verifier.model=Qwen/Qwen3.5-4B"])) == [
+        "Qwen/Qwen3.5-4B"]
+
+
+def test_config_get_models(tmp_path, capsys):
+    assert main(["config-get", "models", "--set", "verifier.model=v/big",
+                 "--set", "model.name_or_path=s/small"]) == 0
+    assert capsys.readouterr().out.splitlines() == ["s/small", "v/big"]
+    main(["config-get", "models"])
+    assert capsys.readouterr().out.splitlines() == ["Qwen/Qwen3.5-4B"]
+    p = ROOT / "configs" / "a100" / "math_qwen35.yaml"
+    main(["config-get", "--config", str(p), "models"])
+    lines = capsys.readouterr().out.splitlines()
+    assert len(lines) == 2 and lines[1] == "Qwen/Qwen3.5-9B"
+
+
+def test_download_model_all_or_one(tmp_path, monkeypatch, capsys):
+    import huggingface_hub
+
+    got = []
+
+    def fake_download(name, allow_patterns=None):
+        got.append((name, tuple(allow_patterns)))
+        return f"/cache/{name}"
+
+    monkeypatch.setattr(huggingface_hub, "snapshot_download", fake_download)
+    local = tmp_path / "local_model"
+    local.mkdir()
+    assert main(["download-model", "--set", "verifier.model=v/big",
+                 "--set", "model.name_or_path=s/small"]) == 0
+    assert [g[0] for g in got] == ["s/small", "v/big"]
+    assert "*.safetensors" in got[0][1]
+    got.clear()
+    assert main(["download-model", "--model", "only/this", "--set", "verifier.model=v/big"]) == 0
+    assert [g[0] for g in got] == ["only/this"]
+    got.clear()
+    assert main(["download-model", "--set", f"model.name_or_path={local}",
+                 "--set", "verifier.model=v/big"]) == 0
+    assert [g[0] for g in got] == ["v/big"]
+    assert "is a local path; nothing to download" in capsys.readouterr().out
+
+
+# ------------------------------------------------------------------ vLLM multimodal probe
+
+
+@pytest.mark.parametrize(
+    "conf,expected",
+    [
+        (dict(architectures=["Qwen3_5ForConditionalGeneration"]), True),
+        (dict(architectures=["Qwen2ForCausalLM"], vision_config={}), True),
+        (dict(architectures=["Qwen2ForCausalLM"]), False),
+        (dict(architectures=None), False),
+        (dict(), False),
+    ],
+)
+def test_is_multimodal(monkeypatch, conf, expected):
+    import types
+
+    import transformers
+
+    from vsft.backends.vllm_backend import _is_multimodal
+    from vsft.config import ModelConfig
+
+    seen = {}
+
+    class FakeAuto:
+        @staticmethod
+        def from_pretrained(name, trust_remote_code=False):
+            seen.update(name=name, trc=trust_remote_code)
+            return types.SimpleNamespace(**conf)
+
+    monkeypatch.setattr(transformers, "AutoConfig", FakeAuto)
+    assert _is_multimodal(ModelConfig(name_or_path="x/y", trust_remote_code=True)) is expected
+    assert seen == {"name": "x/y", "trc": True}
+
+
+def test_is_multimodal_unknown_config_is_text_only(monkeypatch):
+    import transformers
+
+    from vsft.backends.vllm_backend import _is_multimodal
+    from vsft.config import ModelConfig
+
+    class Boom:
+        @staticmethod
+        def from_pretrained(*a, **k):
+            raise OSError("not cached")
+
+    monkeypatch.setattr(transformers, "AutoConfig", Boom)
+    assert _is_multimodal(ModelConfig(name_or_path="nope")) is False
+
+
+def test_is_multimodal_real_qwen35_config(monkeypatch):
+    cache = ROOT / ".scratch" / "hf" / "hub" / "models--Qwen--Qwen3.5-0.8B"
+    if not cache.is_dir():
+        pytest.skip("Qwen3.5-0.8B not cached")
+    import huggingface_hub.constants as C
+
+    from vsft.backends.vllm_backend import _is_multimodal
+    from vsft.config import ModelConfig
+
+    monkeypatch.setattr(C, "HF_HUB_CACHE", str(cache.parent))
+    monkeypatch.setenv("HF_HUB_OFFLINE", "1")
+    assert _is_multimodal(ModelConfig(name_or_path="Qwen/Qwen3.5-0.8B")) is True
+
+
+# ------------------------------------------------------------- fla-check / GPU memory
+
+
+def test_fla_check_without_cuda(monkeypatch, capsys):
+    import torch
+
+    monkeypatch.setattr(torch.cuda, "is_available", lambda: False)
+    assert main(["fla-check"]) == 2
+    assert "FLA CHECK FAILED: no CUDA device" in capsys.readouterr().err
+
+
+def test_fla_check_import_failure(monkeypatch, capsys):
+    import torch
+
+    monkeypatch.setattr(torch.cuda, "is_available", lambda: True)
+    monkeypatch.setitem(sys.modules, "fla", None)  # import fla -> ImportError
+    monkeypatch.setitem(sys.modules, "fla.ops.gated_delta_rule", None)
+    assert main(["fla-check"]) == 2
+    assert "cannot import flash-linear-attention" in capsys.readouterr().err
+
+
+def _fake_nvidia_smi(tmp_path, monkeypatch, body):
+    d = tmp_path / "bin"
+    d.mkdir()
+    exe = d / "nvidia-smi"
+    exe.write_text("#!/bin/sh\n" + body)
+    exe.chmod(0o755)
+    monkeypatch.setenv("PATH", f"{d}:/usr/bin:/bin")
+
+
+def test_gpu_memory_used_absent(monkeypatch):
+    monkeypatch.setenv("PATH", "/nonexistent")
+    assert hpc.gpu_memory_used() is None
+
+
+def test_gpu_memory_used_parses_nvidia_smi(tmp_path, monkeypatch):
+    _fake_nvidia_smi(tmp_path, monkeypatch,
+                     'echo "$@" > "$(dirname "$0")/args"\n'
+                     'printf "0, 30000 MiB, 81920 MiB\\n1, 12 MiB, 81920 MiB\\n"\n')
+    assert hpc.gpu_memory_used() == "0, 30000 MiB, 81920 MiB; 1, 12 MiB, 81920 MiB"
+    args = (tmp_path / "bin" / "args").read_text()
+    assert "--query-gpu=index,memory.used,memory.total" in args and "noheader" in args
+
+
+def test_gpu_memory_used_empty_output(tmp_path, monkeypatch):
+    _fake_nvidia_smi(tmp_path, monkeypatch, "exit 9\n")
+    assert hpc.gpu_memory_used() is None
+
+
+def test_gpu_memory_used_exec_error(tmp_path, monkeypatch):
+    import subprocess
+
+    _fake_nvidia_smi(tmp_path, monkeypatch, "true\n")
+
+    def boom(*a, **k):
+        raise subprocess.TimeoutExpired("nvidia-smi", 30)
+
+    monkeypatch.setattr(subprocess, "run", boom)
+    assert hpc.gpu_memory_used() is None

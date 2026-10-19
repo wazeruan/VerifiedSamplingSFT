@@ -19,7 +19,9 @@ Knobs (environment variables, read at call time):
     FAKE_SBATCH_REJECT_ON N   reject only the N-th sbatch call (1-based); others use the mode
     FAKE_SBATCH_RUN=1     actually run the job script (detached runner): PENDING for
                           FAKE_PENDING_SECS (default 0.3), then RUNNING, then COMPLETED|0:0,
-                          FAILED|rc:0, or CANCELLED|0:sig when killed by a signal
+                          FAILED|rc:0, or CANCELLED|0:sig when killed by a signal.
+                          Run jobs honour --dependency afterok:... (they stay PENDING with
+                          reason Dependency; a failed dependency cancels them)
     FAKE_JOB_TIMELINE     non-run jobs: "STATE|EXIT|REASON@t;STATE|EXIT|REASON@t2" where t is
                           seconds since submission (default "PENDING|0:0|Priority@0").
                           STATE GONE = unknown to both squeue and sacct.
@@ -282,10 +284,30 @@ def sbatch(argv):
     return 0
 
 
+def wait_dependencies(jid, dep):
+    """Honour --dependency afterok:A:B (with --kill-on-invalid-dep semantics)."""
+    if not dep or not dep.startswith("afterok:"):
+        return True
+    ids = [x for x in dep.split(":", 1)[1].split(":") if x]
+    update_job(jid, reason="Dependency")
+    while True:
+        states = [current(load_job(i))[0] for i in ids]
+        if all(st == "COMPLETED" for st in states):
+            update_job(jid, reason="None")
+            return True
+        if any(st not in ACTIVE and st not in ("COMPLETED", "GONE") for st in states):
+            update_job(jid, state="CANCELLED", exit="0:0", reason="DependencyNeverSatisfied",
+                       rc=None, end_time=time.time())
+            return False
+        time.sleep(0.2)
+
+
 def runner(jid):
     job = load_job(jid)
     update_job(jid, runner_pid=os.getpid())
     time.sleep(float(os.environ.get("FAKE_PENDING_SECS", "0.3")))
+    if not wait_dependencies(jid, job.get("dependency")):
+        return 0
     env = dict(os.environ)
     env.update(SLURM_JOB_ID=jid, SLURM_JOB_NAME=job["name"], SLURM_SUBMIT_DIR=job["chdir"],
                SLURM_JOB_NODELIST="fakenode01", SLURM_CPUS_PER_TASK="2")

@@ -74,6 +74,11 @@ def cmd_boost(args) -> int:
             verifier_backend=build_verifier_backend(cfg),
         )
         notify_started(todo=len(todo))
+        from vsft.hpc import gpu_memory_used
+
+        mem = gpu_memory_used()
+        if mem:  # evidence for the student+verifier memory fit (both engines loaded)
+            logging.info("boost: GPU memory after loading models: %s", mem)
         bs = cfg.boost.examples_per_batch
         for i in range(0, len(todo), bs):
             try:
@@ -88,6 +93,8 @@ def cmd_boost(args) -> int:
                 return EXIT_STOPPED
             append_jsonl(out, (r.to_dict() for r in results))
             logging.info("boost: wrote %d/%d", min(i + bs, len(todo)), len(todo))
+            if i == 0 and mem:
+                logging.info("boost: GPU memory after first batch: %s", gpu_memory_used())
     # Summary over the whole output file.
     out.touch(exist_ok=True)
     wanted = set(ids)  # summarize only rows belonging to this input (and --limit)
@@ -148,6 +155,11 @@ def cmd_eval(args) -> int:
     from vsft.backends.base import build_backend
     from vsft.evaluate import evaluate
 
+    # Fail before loading the model (and before STARTED) on a bad argument list.
+    stems = [Path(d).stem for d in args.data]
+    dup = sorted({s for s in stems if stems.count(s) > 1})
+    if dup:  # results are keyed by file name; two files with one name would overwrite
+        raise SystemExit(f"eval: test files share a name: {dup}; rename one of them")
     cfg = load_config(args.config, args.overrides)
     if args.model:
         cfg.model.name_or_path = str(args.model)
@@ -155,18 +167,53 @@ def cmd_eval(args) -> int:
     from vsft.hpc import notify_started
 
     notify_started(model=cfg.model.name_or_path)
-    results = {}
+    import hashlib
+
+    results, datasets = {}, {}
     for data in args.data:
         m = evaluate(backend, data, args.output_dir, cfg.eval, args.limit)
         results[Path(data).stem] = m["accuracy"]
+        # What exactly was evaluated, so `vsft compare` can refuse apples-to-oranges rows.
+        datasets[Path(data).stem] = {
+            "n": m["num_examples"],
+            "sha256": hashlib.sha256(Path(data).read_bytes()).hexdigest(),
+            "limit": args.limit,
+        }
         logging.info("eval %s: accuracy %.4f (n=%d)", data, m["accuracy"], m["num_examples"])
     from vsft.io import write_json_atomic
 
+    try:  # which model class was evaluated (the initial checkpoint may be multimodal)
+        from transformers import AutoConfig
+
+        archs = AutoConfig.from_pretrained(cfg.model.name_or_path).architectures
+    except Exception:  # noqa: BLE001
+        archs = None
     write_json_atomic(
         Path(args.output_dir) / "eval_summary.json",
-        {"model": cfg.model.name_or_path, "accuracy": results},
+        {
+            "model": cfg.model.name_or_path,
+            "architectures": archs,
+            "label": args.label,
+            "accuracy": results,
+            "datasets": datasets,
+            "decoding": {
+                "temperature": cfg.eval.temperature,
+                "max_new_tokens": cfg.eval.max_new_tokens,
+            },
+        },
     )
     return 0
+
+
+def cmd_compare(args) -> int:
+    from vsft.compare import main as compare_main
+
+    argv = [str(p) for p in args.paths]
+    if args.json_out:
+        argv += ["--json", str(args.json_out)]
+    if args.allow_mismatch:
+        argv.append("--allow-mismatch")
+    return compare_main(argv)
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -201,7 +248,16 @@ def build_parser() -> argparse.ArgumentParser:
     e.add_argument("--data", required=True, nargs="+", type=Path)
     e.add_argument("--output-dir", required=True, type=Path)
     e.add_argument("--limit", type=int, default=0)
+    e.add_argument(
+        "--label", default=None, help="method label for `vsft compare` (base | sft | sampling)"
+    )
     e.set_defaults(func=cmd_eval)
+
+    c = sub.add_parser("compare", help="table: base vs plain SFT vs Sampling SFT accuracy")
+    c.add_argument("paths", nargs="+", type=Path, help="eval_summary.json files or directories")
+    c.add_argument("--json", dest="json_out", type=Path, help="also write the numbers as JSON")
+    c.add_argument("--allow-mismatch", action="store_true", help="print even if rows differ")
+    c.set_defaults(func=cmd_compare)
     return p
 
 

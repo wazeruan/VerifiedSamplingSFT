@@ -5,18 +5,41 @@ from __future__ import annotations
 from vsft.backends.base import Backend, Generation
 
 
+def _is_multimodal(model_cfg) -> bool:
+    try:
+        from transformers import AutoConfig
+
+        cfg = AutoConfig.from_pretrained(
+            model_cfg.name_or_path, trust_remote_code=model_cfg.trust_remote_code
+        )
+    except Exception:  # noqa: BLE001 - unknown config: assume text-only
+        return False
+    archs = getattr(cfg, "architectures", None) or []
+    return any("ConditionalGeneration" in a for a in archs) or hasattr(cfg, "vision_config")
+
+
 class VLLMBackend(Backend):
     def __init__(self, model_cfg, backend_cfg):
         from vllm import LLM
 
+        kwargs = {}
+        if _is_multimodal(model_cfg):
+            # Text-only use of a multimodal checkpoint (e.g. Qwen3.5): no image/video inputs,
+            # so vLLM does not profile or reserve memory for the vision encoder.
+            kwargs["limit_mm_per_prompt"] = {"image": 0, "video": 0}
         self.llm = LLM(
             model=model_cfg.name_or_path,
             dtype=model_cfg.dtype,
             max_model_len=model_cfg.max_model_len,
             gpu_memory_utilization=backend_cfg.gpu_memory_utilization,
             tensor_parallel_size=backend_cfg.tensor_parallel_size,
+            # V1 chunks long prefills, so this may be below max_model_len; it bounds the
+            # per-step prompt_logprobs logits (tokens x 248k vocab for Qwen3.5).
+            max_num_batched_tokens=backend_cfg.max_num_batched_tokens,
+            max_num_seqs=backend_cfg.max_num_seqs,
             trust_remote_code=model_cfg.trust_remote_code,
             seed=backend_cfg.seed,
+            **kwargs,
         )
         self.tokenizer = self.llm.get_tokenizer()
         self.max_len = model_cfg.max_model_len

@@ -66,7 +66,7 @@ def test_results(h):
     r = h.run("results.sh", run)
     assert r.returncode == 0, r.stderr
     assert "rows=10" in r.stdout and "final_step=7" in r.stdout
-    assert "math500_test=0.25" in r.stdout and "[train] state=SUCCEEDED" in r.stdout
+    assert "| 25.0 | 25.0 |" in r.stdout and "[train] Sampling SFT: state=SUCCEEDED" in r.stdout
 
 
 def test_results_empty_run(h):
@@ -331,3 +331,15 @@ def test_fetch_success_with_fakes(h):
     tail = (log + r.stdout).split("Done. Now run the GPU stages offline:", 1)[1]
     cmd = shlex.split(tail.replace("\\\n", " ").strip().splitlines()[0])
     assert cmd[0] == "slurm/submit.sh" and "--resume" in cmd
+
+
+def test_status_lists_comparison_stages(h):
+    run = mkrun(h)
+    for i, s in enumerate(("train_sft", "eval_sft", "eval_base")):
+        h.add_job(2000 + i, "PENDING|0:0|Dependency@0")
+        mark(run, s, "SUBMITTED", str(2000 + i))
+    r = h.run("status.sh", run)
+    assert r.returncode == 0, r.stderr
+    rows = {ln.split()[0]: ln.split() for ln in r.stdout.splitlines()[1:]}
+    for i, s in enumerate(("train_sft", "eval_sft", "eval_base")):
+        assert rows[s][1:4] == ["SUBMITTED", str(2000 + i), "PENDING"], r.stdout

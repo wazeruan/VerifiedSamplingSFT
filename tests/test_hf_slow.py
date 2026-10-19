@@ -70,9 +70,11 @@ def test_generate_uses_fresh_generation_config(backend, monkeypatch):
         seen.append(kw["generation_config"])
         return orig(*a, **kw)
 
-    # the checkpoint generation_config samples with top_k=20, repetition_penalty=1.1
+    # make the checkpoint's generation_config opinionated (Qwen2.5 ships top_k=20 and
+    # repetition_penalty=1.1; Qwen3.5-0.8B ships none): it must not leak into sampling
     ckpt = backend.model.generation_config
-    assert ckpt.top_k == 20 and ckpt.repetition_penalty > 1.0
+    monkeypatch.setattr(ckpt, "top_k", 20)
+    monkeypatch.setattr(ckpt, "repetition_penalty", 1.1)
     monkeypatch.setattr(backend.model, "generate", spy)
     from vsft.prompts import student_messages
 

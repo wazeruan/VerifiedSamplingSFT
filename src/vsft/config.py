@@ -30,6 +30,10 @@ class BackendConfig:
     score_batch_size: int = 4  # sequences per HF scoring forward pass
     gpu_memory_utilization: float = 0.85  # vLLM only
     tensor_parallel_size: int = 1  # vLLM only
+    # vLLM batching limits. A 248k vocabulary makes prompt_logprobs allocate
+    # max_num_batched_tokens x vocab fp32 logits per step, outside the profiled budget.
+    max_num_batched_tokens: int = 4096  # vLLM only
+    max_num_seqs: int = 256  # vLLM only
     seed: int = 0
 
 
@@ -56,8 +60,9 @@ class BoostConfig:
 
 @dataclass
 class VerifierConfig:
-    # Larger model that grades candidates. Empty = use the student model itself.
-    model: str = "Qwen/Qwen3.5-9B"
+    # Larger model that grades candidates (e.g. Qwen/Qwen3.5-9B). Empty = the student
+    # grades its own candidates. Configs opt in explicitly so nothing is downloaded silently.
+    model: str = ""
     # Share of GPU memory for the verifier when it runs as a second vLLM engine next to
     # the student (ignored by the HF backend and when `model` is empty).
     gpu_memory_utilization: float = 0.35
@@ -94,6 +99,24 @@ class TrainConfig:
     lora_r: int = 0
     lora_alpha: int = 32
     lora_dropout: float = 0.05
+    # Explicit LoRA targets: attention, MLP and Gated-DeltaNet input/output projections.
+    # The tiny DeltaNet gate projections (in_proj_a / in_proj_b, ~num_heads outputs) are
+    # left alone: adapting the decay/beta gates can destabilise the recurrence.
+    # "all-linear" is also accepted.
+    lora_target_modules: list = field(
+        default_factory=lambda: [
+            "q_proj",
+            "k_proj",
+            "v_proj",
+            "o_proj",
+            "gate_proj",
+            "up_proj",
+            "down_proj",
+            "in_proj_qkv",
+            "in_proj_z",
+            "out_proj",
+        ]
+    )
     # Which text to train on: boosted `response` (Sampling SFT) or raw `expert` (SFT baseline).
     source: str = "response"
     include_fallbacks: bool = True  # keep rows whose response fell back to the expert trace
@@ -200,6 +223,8 @@ def validate(cfg: Config) -> None:
         raise ValueError("model.dtype must be auto | bfloat16 | float16 | float32")
     if m.max_model_len < 64:
         raise ValueError("model.max_model_len must be >= 64")
+    if min(be.max_num_batched_tokens, be.max_num_seqs) < 1:
+        raise ValueError("backend.max_num_batched_tokens and max_num_seqs must be >= 1")
     if min(be.gen_batch_size, be.score_batch_size, be.tensor_parallel_size) < 1:
         raise ValueError("backend batch sizes and tensor_parallel_size must be >= 1")
     if not 0 < be.gpu_memory_utilization <= 1:
@@ -247,5 +272,11 @@ def validate(cfg: Config) -> None:
         raise ValueError("train.source must be response or expert")
     if t.keep_last_states < 0 or t.save_every_steps < 0:
         raise ValueError("train.keep_last_states and save_every_steps must be >= 0")
+    lt = t.lora_target_modules
+    if isinstance(lt, str):
+        if not lt.strip():
+            raise ValueError("train.lora_target_modules must not be empty")
+    elif not isinstance(lt, list) or not lt or not all(isinstance(x, str) and x for x in lt):
+        raise ValueError('train.lora_target_modules must be "all-linear" or a list of names')
     if t.lora_r < 0:
         raise ValueError("train.lora_r must be >= 0")

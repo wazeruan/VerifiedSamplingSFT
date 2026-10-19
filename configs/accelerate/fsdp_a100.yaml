@@ -1,5 +1,6 @@
-# Multi-GPU full finetuning (e.g. 7B on 4x A100-80GB): slurm/submit.sh train --gpus a100:4
-#   --accelerate-config configs/accelerate/fsdp_a100.yaml
+# Multi-GPU full finetuning of Qwen3.5 (e.g. 4B on 2x A100-80GB): slurm/submit.sh train
+#   --gpus a100:2 --accelerate-config configs/accelerate/fsdp_a100.yaml
+# For a different model family, change fsdp_transformer_layer_cls_to_wrap to its decoder layer.
 compute_environment: LOCAL_MACHINE
 distributed_type: FSDP
 mixed_precision: bf16
@@ -7,6 +8,9 @@ num_machines: 1
 fsdp_config:
   fsdp_version: 1
   fsdp_auto_wrap_policy: TRANSFORMER_BASED_WRAP
+  # Explicit: the text-only Qwen3_5ForCausalLM inherits a _no_split_modules entry for the
+  # vision block it does not contain, which makes accelerate's auto-detection fail.
+  fsdp_transformer_layer_cls_to_wrap: Qwen3_5DecoderLayer
   fsdp_sharding_strategy: FULL_SHARD
   # Resumable state is saved sharded (no rank-0 gather of optimizer state); the final
   # model export still gathers a full state dict.

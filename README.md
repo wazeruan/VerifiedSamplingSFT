@@ -84,11 +84,82 @@ uv run vsft train --config configs/a100/math_qwen35.yaml --data data/boosted/mat
 uv run vsft eval --config configs/a100/math_qwen35.yaml --model runs/sft-sampling/final --data data/processed/math_l345_test.jsonl data/processed/math500_test.jsonl data/processed/gsm8k_test.jsonl --output-dir runs/sft-sampling/eval
 ```
 
-- **Baseline SFT on the raw expert traces:** add `--set train.source=expert`.
+- **Baseline SFT on the raw expert traces:** add `--set train.source=expert`. See [Comparison with plain SFT](#comparison-with-plain-sft) for the full side-by-side.
 - **Resume interrupted runs:** `boost` resumes automatically by skipping ids already in `--output`. For `train`, pass `--resume-from runs/<run>/state-epochN`.
 - **Override any config value:** `--set section.key=value`.
 
-Memory: fully finetuning Qwen3.5-4B with fp32 master weights and AdamW needs about 50 GB plus activations, so use an 80 GB A100. On 40 GB cards, set `train.lora_r=16` or use FSDP across GPUs via `accelerate launch`.
+Memory: Qwen3.5's 248k vocabulary makes the logits and loss the biggest training cost, so keep `per_device_batch_size` at 1–2 and raise `grad_accum_steps` instead. Full fine-tuning of Qwen3.5-4B (fp32 master weights + AdamW, about 67 GB) does not fit one A100; use FSDP on 2× A100-80GB (`configs/a100/math_qwen35_full_fsdp.yaml`).
+
+## Comparison with plain SFT
+
+The paper's central claim is that SFT on boosted traces beats SFT on the raw expert traces. The comparison has three arms. All three use the same config, the same training hyperparameters and the same test sets:
+
+| Arm | Model | Training data |
+|---|---|---|
+| **Initial model** | the untrained student (`model.name_or_path`) | none |
+| **Plain SFT** | student + SFT | the raw expert traces of the boosted rows (`train.source=expert`) |
+| **Sampling SFT** | student + SFT | the boosted traces of the same rows (`train.source=response`) |
+
+Both SFT arms read the same `boosted.jsonl` with the same row filter: rows dropped by `on_failure: drop`, or fallbacks excluded by `include_fallbacks: false`, are removed from both. So the two arms train on exactly the same questions, example count and LR schedule; the only difference is the text. `slurm/results.sh` prints each arm's example count and step count, so you can check this.
+
+"Initial model" is the starting checkpoint. `Qwen/Qwen3.5-4B` is already post-trained. To match the paper's base-model setting exactly, point `model.name_or_path` at `Qwen/Qwen3.5-4B-Base` instead.
+
+On Slurm, one command runs all three arms. Plain SFT waits for boosting, because it trains on the same rows; the initial-model eval runs as soon as the data is ready:
+
+```bash
+slurm/submit.sh compare --account ACCOUNT --run-dir /scratch/$USER/vsft/cmp --cache-root /scratch/$USER/vsft-cache --min-gpu-mem-gb 79
+```
+
+```
+setup -> prepare -> boost -> train     -> eval        (Sampling SFT)
+                          -> train_sft -> eval_sft    (plain SFT)
+                 -> eval_base                         (initial model)
+```
+
+After `fetch_online.sh`, drop the network stages:
+
+```bash
+slurm/submit.sh compare --account ACCOUNT --resume RUN_DIR --stages boost,train,eval,train_sft,eval_sft,eval_base --cache-root /scratch/$USER/vsft-cache --min-gpu-mem-gb 79
+```
+
+When the evals finish, print the table. Each eval writes `RUN_DIR/eval/<base|sft|sampling>-JOBID/eval_summary.json`:
+
+```bash
+slurm/results.sh RUN_DIR
+```
+
+It looks like this (numbers illustrative):
+
+```
+| Method | math_l345_test | math500_test | gsm8k_test | Avg |
+| --- | --- | --- | --- | --- |
+| Initial model | … | … | … | … |
+| Plain SFT (expert traces) | … | … | … | … |
+| Sampling SFT | … | … | … | … |
+| Sampling − Plain SFT (pts) | +… | +… | +… | +… |
+```
+
+Each stage can also be submitted on its own, e.g. `slurm/submit.sh train_sft --account ACCOUNT --resume RUN_DIR`.
+
+Without Slurm, run the same three arms locally:
+
+```bash
+uv run vsft train --config CONFIG --data data/boosted/BOOSTED.jsonl --output-dir runs/sft-baseline --set train.source=expert
+```
+
+```bash
+uv run vsft eval --config CONFIG --model runs/sft-baseline/final --label sft --data TEST_FILES --output-dir runs/eval/sft
+```
+
+```bash
+uv run vsft eval --config CONFIG --label base --data TEST_FILES --output-dir runs/eval/base
+```
+
+```bash
+uv run vsft compare runs/eval
+```
+
+Use `--label sampling` for the Sampling SFT model's eval.
 
 ## Slurm / SSH on A100
 
@@ -149,26 +220,26 @@ You never call `sbatch` directly: `slurm/submit.sh` is a noninteractive wrapper 
 - `--preempt-grace` defaults to 500 s for boost/train and 240 s for eval. It is always capped at each stage's warning lead minus 60 s.
 - Only the USR1 warning path reliably checkpoints large training states. A TERM-only stop (`scancel`, preemption) saves state only if the save finishes within the site's `KillWait`/`GraceTime`, usually about 30 s. Eval and prepare stop promptly on TERM.
 
-**Storage.** Point `--cache-root` (HF, uv, vLLM and Triton caches) and `--run-dir` at scratch storage, not `/home` or `/project`. Training states rotate (`train.keep_last_states`, default 2). Full fine-tuning keeps about 37 GB per state, so with `math_qwen35_full80g.yaml` pass `--min-free-gb 150`. Copy the final models you want to keep to project space.
+**Storage.** Point `--cache-root` (HF, uv, vLLM and Triton caches) and `--run-dir` at scratch storage, not `/home` or `/project`. Training states rotate (`train.keep_last_states`, default 2). Full fine-tuning keeps a large optimizer state per checkpoint, so with `math_qwen35_full_fsdp.yaml` pass `--min-free-gb 200`. Copy the final models you want to keep to project space.
 
 ### Typical Alliance-style cluster (compute nodes have no internet)
 
 1. Where your site allows downloads (a data-transfer node, or a login node if permitted), run:
 
    ```bash
-   slurm/fetch_online.sh --i-confirm-site-policy-allows-this --run-dir /scratch/$USER/vsft/math-qwen3b --cache-root /scratch/$USER/vsft-cache
+   slurm/fetch_online.sh --i-confirm-site-policy-allows-this --run-dir /scratch/$USER/vsft/math-qwen35 --cache-root /scratch/$USER/vsft-cache
    ```
 
 2. Then submit the GPU stages. They run offline by default; pass `--online` to allow Hub access.
 
    ```bash
-   slurm/submit.sh pipeline --account ACCOUNT --resume /scratch/$USER/vsft/math-qwen3b --stages boost,train,eval --cache-root /scratch/$USER/vsft-cache
+   slurm/submit.sh pipeline --account ACCOUNT --resume /scratch/$USER/vsft/math-qwen35 --stages boost,train,eval --cache-root /scratch/$USER/vsft-cache --min-gpu-mem-gb 79
    ```
 
 If compute nodes do have internet, a single command runs everything, including the setup and prepare CPU jobs:
 
 ```bash
-slurm/submit.sh pipeline --account ACCOUNT --run-dir /scratch/$USER/vsft/math-qwen3b --cache-root /scratch/$USER/vsft-cache
+slurm/submit.sh pipeline --account ACCOUNT --run-dir /scratch/$USER/vsft/math-qwen35 --cache-root /scratch/$USER/vsft-cache --min-gpu-mem-gb 79
 ```
 
 ### Other commands
@@ -210,11 +281,11 @@ slurm/results.sh RUN_DIR
 `remote.sh` uses your `~/.ssh/config` alias. It rsyncs only into a directory it created itself (marked by `.vsft-checkout`), then runs `submit.sh` on the login node. Write remote paths literally or with a leading `~/`, which expands to the remote home:
 
 ```bash
-slurm/remote.sh submit --host mycluster --remote-dir '~/vsft' -- pipeline --account ACCOUNT --resume /scratch/USER/vsft/math-qwen3b --stages boost,train,eval --cache-root /scratch/USER/vsft-cache
+slurm/remote.sh submit --host mycluster --remote-dir '~/vsft' -- pipeline --account ACCOUNT --resume /scratch/USER/vsft/math-qwen35 --stages boost,train,eval --cache-root /scratch/USER/vsft-cache --min-gpu-mem-gb 79
 ```
 
 ```bash
-slurm/remote.sh status --host mycluster --remote-dir '~/vsft' /scratch/USER/vsft/math-qwen3b
+slurm/remote.sh status --host mycluster --remote-dir '~/vsft' /scratch/USER/vsft/math-qwen35
 ```
 
 ### CUDA A100 specifics
@@ -233,9 +304,25 @@ slurm/remote.sh status --host mycluster --remote-dir '~/vsft' /scratch/USER/vsft
 - `--mem` defaults to `120G` of host RAM. This fits a per-A100 share such as Narval's (about 124 GB and 12 cores per GPU); check your site's share.
 - `--gpus a100:N`, `--partition`, `--qos` and `--constraint` are all configurable. No site values are hard-coded.
 - Pick the config for your card:
-  - `configs/a100/math_qwen35.yaml`: LoRA SFT, fits a 40 GB A100.
-  - `configs/a100/math_qwen35_full80g.yaml`: full SFT. Submit it with `--min-gpu-mem-gb 79`.
-- For multi-GPU FSDP, add `--gpus a100:4 --accelerate-config configs/accelerate/fsdp_a100.yaml`.
+  - `configs/a100/math_qwen35.yaml`: LoRA SFT with the 4B student and 9B verifier. **Needs an 80 GB A100**, because boosting serves both models from one GPU. Submit with `--min-gpu-mem-gb 79`. On a 40 GB A100, set `verifier.model: ""` so the student grades itself.
+  - `configs/a100/math_qwen35_full_fsdp.yaml`: full SFT. Needs FSDP on 2× A100-80GB: `--gpus a100:2 --accelerate-config configs/accelerate/fsdp_a100.yaml --min-gpu-mem-gb 79`.
+- The FSDP config wraps `Qwen3_5DecoderLayer`. For another model family, change `fsdp_transformer_layer_cls_to_wrap`.
+- `--gpus` sets the GPU request for every GPU stage. Boost and eval always use one GPU. For multi-GPU training inside `pipeline`/`compare`, use `--train-gpus a100:2`, which applies only to `train`/`train_sft`.
+- `submit.sh` refuses a config with a separate verifier unless `--min-gpu-mem-gb 79` is given, so a 40 GB node never wastes the queue wait.
+
+**Before the first full run**, do two short checks on the real cluster:
+
+1. `gpucheck` verifies the A100, CUDA and bf16, and runs one `flash-linear-attention` kernel, the Qwen3.5 training path:
+
+   ```bash
+   slurm/submit.sh gpucheck --account ACCOUNT --resume RUN_DIR --min-gpu-mem-gb 79
+   ```
+
+2. A 2-example boost builds both vLLM engines and logs GPU memory after loading and after the first batch. Delete `RUN_DIR/boosted.jsonl` afterwards, since boost resumes from it:
+
+   ```bash
+   slurm/submit.sh boost --account ACCOUNT --resume RUN_DIR --min-gpu-mem-gb 79 -- --limit 2
+   ```
 
 ## Tests
 

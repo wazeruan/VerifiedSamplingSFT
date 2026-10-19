@@ -415,3 +415,45 @@ def test_scores_none_instead_of_inf_and_json_safe():
     [res] = b.boost([ex()])
     assert res.expert_mean_logprob is None and res.final_mean_logprob is None
     json.dumps(res.to_dict(), allow_nan=False)
+
+
+# ------------------------------------------------------------- separate verifier backend
+
+
+def test_booster_uses_verifier_backend_for_grading_only():
+    student = FakeBackend(lambda q, p, r: [("ok \\boxed{42}", True), ("no \\boxed{1}", True)],
+                          lambda q, s: pytest.fail("student must not grade"),
+                          lambda q, r: -0.5 if r.startswith("ok") else -1.0)
+    graded = []
+
+    def judge(q, steps):
+        graded.append(steps)
+        return ACCEPT
+
+    verifier = FakeBackend(lambda *a: pytest.fail("verifier must not propose"), judge,
+                           lambda *a: pytest.fail("verifier must not score"))
+    b = Booster(student, boost_cfg(), verifier_cfg(), verifier_backend=verifier)
+    assert b.verifier.backend is verifier
+    [res] = b.boost([ex()])
+    assert res.status == "accepted" and res.response == "ok \\boxed{42}"
+    assert len(student.proposal_calls) == 1 and student.verifier_calls == []
+    assert len(student.score_calls) == 3  # candidates, expert, final re-score
+    assert verifier.proposal_calls == [] and verifier.score_calls == []
+    assert len(verifier.verifier_calls) == 1 and graded == [["ok \\boxed{42}"]]
+
+
+def test_booster_without_verifier_backend_shares_student():
+    be = FakeBackend(lambda q, p, r: [("ok \\boxed{42}", True)] * 2, lambda q, s: ACCEPT)
+    b = Booster(be, boost_cfg(), verifier_cfg())
+    assert b.verifier.backend is be
+    b.boost([ex()])
+    assert len(be.verifier_calls) == 1
+
+
+def test_verifier_too_long_uses_verifier_backend_limit():
+    student = FakeBackend(lambda q, p, r: [("ok \\boxed{42}", True)] * 2, lambda q, s: ACCEPT)
+    verifier = FakeBackend(lambda *a: [], lambda q, s: ACCEPT, max_len=10)  # tiny context
+    b = Booster(student, boost_cfg(max_rounds=1, on_failure="drop"), verifier_cfg(),
+                verifier_backend=verifier)
+    [res] = b.boost([ex()])
+    assert res.rounds[0]["reason"] == "verifier_too_long" and res.status == "dropped"

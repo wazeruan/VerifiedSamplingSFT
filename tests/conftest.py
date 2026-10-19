@@ -21,6 +21,11 @@ def _isolate_job_env(monkeypatch):
 
     for k in _JOB_ENV:
         monkeypatch.delenv(k, raising=False)
+    # never touch the network (e.g. `vsft eval` probing AutoConfig for an uncached model)
+    import huggingface_hub.constants as hf_constants
+
+    monkeypatch.setattr(hf_constants, "HF_HUB_OFFLINE", True)
+    monkeypatch.setenv("HF_HUB_OFFLINE", "1")
     vsft.hpc._STOP_FLAG = False
     old = signal.getsignal(signal.SIGTERM)
     yield

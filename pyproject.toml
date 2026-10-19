@@ -17,7 +17,10 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
-vllm = ["vllm>=0.8; sys_platform == 'linux'"]
+vllm = [
+    "flash-linear-attention>=0.5.2 ; sys_platform == 'linux'",
+    "vllm>=0.8; sys_platform == 'linux'",
+]
 
 [project.scripts]
 vsft = "vsft.cli:main"

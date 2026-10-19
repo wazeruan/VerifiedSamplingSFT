@@ -37,13 +37,12 @@ def load_sft_pairs(path: str | Path, source: str, include_fallbacks: bool) -> li
     """(question, completion) pairs from a boosted file (or any id/question/expert file)."""
     pairs = []
     for row in read_jsonl(path):
-        if source == "expert":
-            text = row.get("expert")
-        else:
-            status = row.get("status") or "accepted"
-            if status == "dropped" or (status.startswith("fallback") and not include_fallbacks):
-                continue
-            text = row.get("response")
+        # The same row filter applies to both sources, so plain SFT (source=expert) and
+        # Sampling SFT (source=response) trained on one boosted file see the same questions.
+        status = row.get("status") or "accepted"
+        if status == "dropped" or (status.startswith("fallback") and not include_fallbacks):
+            continue
+        text = row.get("expert") if source == "expert" else row.get("response")
         if isinstance(text, str) and text.strip():
             pairs.append((row["question"], text))
     if not pairs:
@@ -60,16 +59,51 @@ def completion_text(tok, question: str, completion: str) -> tuple[str, str]:
     """
     msgs = student_messages(question)
     prompt = render_chat(tok, msgs)
-    if getattr(tok, "chat_template", None):
-        full = tok.apply_chat_template(
-            [*msgs, {"role": "assistant", "content": completion}],
-            tokenize=False,
-            enable_thinking=False,
-        )
-        if full.startswith(prompt) and completion in full[len(prompt) :]:
-            return prompt, full[len(prompt) :]
-    eos = tok.eos_token or ""
-    return prompt, completion + eos
+    return prompt, completion + end_of_turn(tok)
+
+
+def lora_targets(value):
+    """Normalize train.lora_target_modules: "all-linear", or a list of module names.
+
+    A single name string is wrapped in a list (never iterated into characters, which PEFT
+    would suffix-match against every module).
+    """
+    if isinstance(value, str):
+        return "all-linear" if value == "all-linear" else [value]
+    names = [str(x) for x in value]
+    return "all-linear" if names == ["all-linear"] else names
+
+
+# Keyed by what determines the answer, not id(tok): ids are reused after objects are freed.
+_EOT_CACHE: dict[tuple, str] = {}
+
+
+def end_of_turn(tok) -> str:
+    """Text the chat template puts after an assistant message (e.g. "<|im_end|>\n").
+
+    Found by rendering a probe conversation and taking what follows a sentinel reply, so it
+    works even when the generation prompt (e.g. Qwen3.5's empty <think></think> block) is
+    not a prefix of the rendered full conversation. Falls back to the eos token.
+    """
+    key = (
+        getattr(tok, "name_or_path", None),
+        getattr(tok, "chat_template", None),
+        getattr(tok, "eos_token", None),
+    )
+    if key not in _EOT_CACHE:
+        eot = tok.eos_token or ""
+        if getattr(tok, "chat_template", None):
+            sentinel = "VSFT_SENTINEL_REPLY_7f3a"
+            full = tok.apply_chat_template(
+                [{"role": "user", "content": "q"}, {"role": "assistant", "content": sentinel}],
+                tokenize=False,
+                enable_thinking=False,
+            )
+            i = full.rfind(sentinel)
+            if i >= 0 and full[i + len(sentinel) :].strip():
+                eot = full[i + len(sentinel) :]
+        _EOT_CACHE[key] = eot
+    return _EOT_CACHE[key]
 
 
 def tokenize_pair(tok, question: str, completion: str, max_len: int) -> dict | None:
@@ -198,7 +232,7 @@ def train(cfg, data_path: str | Path, out_dir: str | Path, resume_from: str | No
             r=t.lora_r,
             lora_alpha=t.lora_alpha,
             lora_dropout=t.lora_dropout,
-            target_modules="all-linear",
+            target_modules=lora_targets(t.lora_target_modules),
             task_type="CAUSAL_LM",
         )
         model = get_peft_model(model, lora_cfg)

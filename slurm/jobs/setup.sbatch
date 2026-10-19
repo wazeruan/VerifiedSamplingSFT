@@ -15,5 +15,5 @@ vsft_mark_started_cpu
 mkdir -p "$(dirname "$VSFT_VENV")"
 vsft_run uv sync --project "$VSFT_CODE_DIR" --frozen --extra vllm   # into UV_PROJECT_ENVIRONMENT=$VSFT_VENV
 vsft_run "$VSFT_PY" -m vsft.hpc stamp-lock --lock "$VSFT_CODE_DIR/uv.lock"
-vsft_run "$VSFT_PY" -c "import vsft, torch, transformers, vllm; print('env ok', torch.__version__, transformers.__version__, vllm.__version__)"
+vsft_run "$VSFT_PY" -c "import vsft, torch, transformers, vllm, fla; print('env ok', torch.__version__, transformers.__version__, vllm.__version__, 'fla', fla.__version__)"
 vsft_succeed "venv=$VSFT_VENV"

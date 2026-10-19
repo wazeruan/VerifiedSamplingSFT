@@ -161,3 +161,104 @@ def test_override_does_not_mask_bad_section(tmp_path, section):
         load_config(p, ["boost.num_candidates=2"])
     with pytest.raises(ValueError, match="must be a mapping"):
         load_config(p)
+
+
+# ------------------------------------------------------------- Qwen3.5 + separate verifier
+
+
+def test_qwen35_defaults():
+    cfg = load_config()
+    assert cfg.model.name_or_path == "Qwen/Qwen3.5-4B"
+    assert cfg.verifier.model == ""  # opt-in: the student grades unless a config says otherwise
+    assert cfg.verifier.gpu_memory_utilization == pytest.approx(0.35)
+
+
+@pytest.mark.parametrize("v", ["0", "1", "1.0", "-0.1", "1.5"])
+def test_verifier_gpu_memory_utilization_range(v):
+    with pytest.raises(ValueError, match="verifier.gpu_memory_utilization"):
+        load_config(None, [f"verifier.gpu_memory_utilization={v}"])
+
+
+def test_verifier_model_overrides():
+    assert load_config(None, ["verifier.model=''"]).verifier.model == ""
+    assert load_config(None, ["verifier.model=a/b"]).verifier.model == "a/b"
+    assert load_config(None, ["verifier.gpu_memory_utilization=0.5"]).verifier \
+        .gpu_memory_utilization == 0.5
+
+
+def test_empty_override_value_is_not_empty_string():
+    # `--set verifier.model=` parses as YAML null, not "": use verifier.model='' instead
+    with pytest.raises(ValueError, match="expects str"):
+        load_config(None, ["verifier.model="])
+
+
+@pytest.mark.parametrize("name", ["smoke.yaml", "a100/math_qwen35.yaml",
+                                  "a100/math_qwen35_full_fsdp.yaml"])
+def test_shipped_configs_load(name):
+    from pathlib import Path
+
+    p = Path(__file__).resolve().parents[1] / "configs" / name
+    cfg = load_config(p)
+    assert cfg.model.name_or_path.startswith("Qwen/Qwen3.5-")
+    if name == "smoke.yaml":
+        assert cfg.model.name_or_path == "Qwen/Qwen3.5-0.8B" and cfg.verifier.model == ""
+    else:
+        assert cfg.verifier.model == "Qwen/Qwen3.5-9B"
+        if cfg.backend.kind == "vllm" and cfg.verifier.model:
+            assert (cfg.backend.gpu_memory_utilization + cfg.verifier.gpu_memory_utilization
+                    <= 0.95)
+
+
+def test_old_config_names_gone():
+    from pathlib import Path
+
+    a100 = Path(__file__).resolve().parents[1] / "configs" / "a100"
+    assert not list(a100.glob("*qwen3b*")) and not list(a100.glob("*full80g*"))
+
+
+def test_backend_vllm_batching_fields():
+    cfg = load_config()
+    assert cfg.backend.max_num_batched_tokens == 4096 and cfg.backend.max_num_seqs == 256
+    cfg = load_config(None, ["backend.max_num_batched_tokens=8192", "backend.max_num_seqs=64"])
+    assert (cfg.backend.max_num_batched_tokens, cfg.backend.max_num_seqs) == (8192, 64)
+    for ov in ("backend.max_num_batched_tokens=0", "backend.max_num_seqs=0",
+               "backend.max_num_seqs=-3"):
+        with pytest.raises(ValueError, match="max_num_batched_tokens and max_num_seqs"):
+            load_config(None, [ov])
+
+
+def test_lora_target_modules_default_and_overrides(tmp_path):
+    t = load_config().train
+    assert t.lora_target_modules == ["q_proj", "k_proj", "v_proj", "o_proj", "gate_proj",
+                                     "up_proj", "down_proj", "in_proj_qkv", "in_proj_z",
+                                     "out_proj"]
+    assert "in_proj_a" not in t.lora_target_modules and "in_proj_b" not in t.lora_target_modules
+    # defaults are not shared between instances
+    a, b = load_config().train, load_config().train
+    a.lora_target_modules.append("x")
+    assert "x" not in b.lora_target_modules
+    assert load_config(None, ["train.lora_target_modules=all-linear"]).train \
+        .lora_target_modules == "all-linear"
+    assert load_config(None, ["train.lora_target_modules=[q_proj, v_proj]"]).train \
+        .lora_target_modules == ["q_proj", "v_proj"]
+    p = tmp_path / "c.yaml"
+    p.write_text("train:\n  lora_target_modules: [all-linear]\n")
+    assert load_config(p).train.lora_target_modules == ["all-linear"]
+
+
+def test_lora_target_modules_single_string_wrapped():
+    from vsft.train import lora_targets
+
+    t = load_config(None, ["train.lora_target_modules=q_proj"]).train
+    assert lora_targets(t.lora_target_modules) == ["q_proj"]
+
+
+@pytest.mark.parametrize(
+    "value,match",
+    [("''", "must not be empty"), ("'  '", "must not be empty"), ("[]", "all-linear"),
+     ("[q_proj, 3]", "all-linear"), ("[q_proj, '']", "all-linear"), ("[[q_proj]]", "all-linear"),
+     ("5", "all-linear")],
+)
+def test_lora_target_modules_validation(value, match):
+    with pytest.raises(ValueError, match=match):
+        load_config(None, [f"train.lora_target_modules={value}"])

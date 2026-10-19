@@ -13,8 +13,14 @@ source "${VSFT_CODE_DIR:?submit through slurm/submit.sh}/slurm/lib/job_common.sh
 vsft_init
 INPUT="${VSFT_INPUT:-$VSFT_RUN_DIR/data/math_l345_train.jsonl}"
 OUTPUT="$VSFT_RUN_DIR/boosted.jsonl"
-MODEL="$("$VSFT_PY" -m vsft.hpc config-get --config "$VSFT_CONFIG" model.name_or_path)"
-vsft_preflight gpu --require-file "$INPUT" --require-file "$VSFT_CONFIG" --require-model "$MODEL"
+# Student and (if separate) verifier must both be in the offline HF cache.
+REQ=(--require-file "$INPUT" --require-file "$VSFT_CONFIG")
+MODELS="$("$VSFT_PY" -m vsft.hpc config-get --config "$VSFT_CONFIG" models)"   # errexit applies
+[[ -n "$MODELS" ]] || { _log "config names no model"; exit 64; }
+while IFS= read -r m; do
+  if [[ -n "$m" ]]; then REQ+=(--require-model "$m"); fi
+done <<< "$MODELS"
+vsft_preflight gpu "${REQ[@]}"
 vsft_run "$VSFT_PY" -m vsft.cli boost --config "$VSFT_CONFIG" \
   --input "$INPUT" --output "$OUTPUT" ${VSFT_STAGE_ARGS[@]+"${VSFT_STAGE_ARGS[@]}"}
 [[ -s "${OUTPUT%.jsonl}.summary.json" ]] || { _log "boost summary missing"; exit 3; }

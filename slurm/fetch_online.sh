@@ -93,7 +93,7 @@ CUR_STAGE=setup
 python3 "$R" mark "$RUN_DIR" setup STARTED "host=$(hostname)"
 mkdir -p "$(dirname "$VENV")"
 uv sync --project "$CODE" --frozen --extra vllm
-"$VENV/bin/python" -c "import vsft, torch, transformers, vllm"   # verify before stamping
+"$VENV/bin/python" -c "import vsft, torch, transformers, vllm, fla"   # verify before stamping
 "$VENV/bin/python" -m vsft.hpc stamp-lock --lock "$CODE/uv.lock"
 python3 "$R" mark "$RUN_DIR" setup SUCCEEDED "venv=$VENV" "via=fetch_online"
 

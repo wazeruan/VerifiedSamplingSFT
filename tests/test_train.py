@@ -51,9 +51,15 @@ def test_load_sft_pairs(tmp_path):
     assert load_sft_pairs(p, "response", True) == [
         ("q1", "r1"), ("q2", "e2"), ("q3", "w3"), ("q6", "r6")]
     assert load_sft_pairs(p, "response", False) == [("q1", "r1"), ("q6", "r6")]
-    # expert baseline uses every row, dropped ones included
-    assert [c for _, c in load_sft_pairs(p, "expert", False)] == [
-        "e1", "e2", "e3", "e4", "e5", "e6"]
+    # the plain-SFT baseline (source=expert) sees exactly the same questions
+    assert load_sft_pairs(p, "expert", True) == [
+        ("q1", "e1"), ("q2", "e2"), ("q3", "e3"), ("q5", "e5"), ("q6", "e6")]
+    assert load_sft_pairs(p, "expert", False) == [("q1", "e1"), ("q5", "e5"), ("q6", "e6")]
+    for inc in (True, False):
+        qs_resp = [q for q, _ in load_sft_pairs(p, "response", inc)]
+        qs_exp = [q for q, _ in load_sft_pairs(p, "expert", inc)]
+        # q5's response is blank, so only the expert source can use it
+        assert [q for q in qs_exp if q != "q5"] == qs_resp
     # raw (un-boosted) file has no response field
     with pytest.raises(ValueError, match="no usable"):
         load_sft_pairs(FIXTURE, "response", True)
@@ -471,3 +477,132 @@ def test_no_started_when_first_step_fails(tmp_path, tiny_model, monkeypatch):
         train(_cfg(tiny_model), FIXTURE, tmp_path / "run")
     assert not (tmp_path / "jobs" / "status" / "train.STARTED").exists()
     del hpc
+
+
+# ------------------------------------------------------------- end-of-turn / LoRA targets
+
+
+class TemplTok:
+    """Chat-template tokenizer whose generation prompt is NOT a prefix of the full
+    conversation (like Qwen3.5's empty <think></think> block with enable_thinking=False)."""
+
+    eos_token = "<|endoftext|>"
+
+    def __init__(self, eot="<|im_end|>\n", name="fake/tok"):
+        self.eot = eot
+        self.name_or_path = name
+        self.chat_template = f"fake template ending turns with {eot!r}"
+        self.calls = 0
+
+    def apply_chat_template(self, msgs, tokenize=False, add_generation_prompt=False,
+                            enable_thinking=None):
+        self.calls += 1
+        out = "".join(f"<|im_start|>{m['role']}\n{m['content']}{self.eot}" for m in msgs
+                      if m["role"] != "assistant")
+        if msgs[-1]["role"] == "assistant":
+            return out + f"<|im_start|>assistant\n{msgs[-1]['content']}{self.eot}"
+        return out + "<|im_start|>assistant\n<think>\n\n</think>\n\n"
+
+
+def test_end_of_turn_from_template_and_fallback():
+    from vsft.train import end_of_turn
+
+    t = TemplTok()
+    assert end_of_turn(t) == "<|im_end|>\n"
+    prompt, comp = completion_text(t, "Q?", "It is 2")
+    assert prompt.endswith("<think>\n\n</think>\n\n") and comp == "It is 2<|im_end|>\n"
+    n = t.calls
+    end_of_turn(t)
+    assert t.calls == n  # cached per tokenizer
+    ws = WsTok()  # kept alive: the cache is keyed by id() (see the id-reuse xfail below)
+    assert end_of_turn(ws) == "<eos>"  # no chat template -> eos token
+    blank = TemplTok(eot="")  # template adds nothing after the reply -> eos fallback
+    assert end_of_turn(blank) == "<|endoftext|>"
+
+
+def test_end_of_turn_cache_survives_id_reuse():
+    import gc
+
+    from vsft.train import end_of_turn
+
+    for _ in range(200):
+        a = TemplTok(eot="<A>\n")
+        end_of_turn(a)
+        old = id(a)
+        del a
+        gc.collect()
+        b = TemplTok(eot="<B>\n")
+        if id(b) == old:
+            assert end_of_turn(b) == "<B>\n"
+            return
+    # CPython did not reuse an id this time: check the cache is not keyed by id() instead
+    import vsft.train as tr
+
+    assert all(isinstance(k, tuple) for k in tr._EOT_CACHE)
+    assert end_of_turn(TemplTok(eot="<B>\n")) == "<B>\n"
+
+
+def test_end_of_turn_real_tiny_tokenizer(tiny_model):
+    from vsft.backends.hf import load_tokenizer
+    from vsft.train import end_of_turn
+
+    tok = load_tokenizer(str(tiny_model))
+    assert end_of_turn(tok) == tok.eos_token  # tiny tokenizer has no chat template
+
+
+@pytest.mark.parametrize(
+    "ov,expected",
+    [(None, ["q_proj", "k_proj", "v_proj", "o_proj", "gate_proj", "up_proj", "down_proj",
+             "in_proj_qkv", "in_proj_z", "out_proj"]),
+     ("train.lora_target_modules=all-linear", "all-linear"),
+     ("train.lora_target_modules=[all-linear]", "all-linear"),
+     ("train.lora_target_modules=[q_proj, v_proj]", ["q_proj", "v_proj"]),
+     ("train.lora_target_modules=q_proj", ["q_proj"])],
+)
+def test_lora_target_modules_passed_to_peft(tmp_path, tiny_model, monkeypatch, ov, expected):
+    import peft
+
+    from vsft.train import train
+
+    seen = []
+    real = peft.LoraConfig
+
+    def spy(**kw):
+        seen.append(kw["target_modules"])
+        return real(**kw)
+
+    monkeypatch.setattr(peft, "LoraConfig", spy)
+    extra = [ov] if ov else []
+    train(_cfg(tiny_model, "train.lora_r=4", *extra), FIXTURE, tmp_path)
+    assert seen[0] == expected or set(seen[0]) == set(expected)
+    from transformers import AutoModelForCausalLM
+
+    m = AutoModelForCausalLM.from_pretrained(tmp_path / "final")
+    assert not any("lora" in k for k in m.state_dict())
+
+
+def test_end_of_turn_cache_key():
+    from vsft.train import end_of_turn
+
+    a, b = TemplTok(eot="<A>\n"), TemplTok(eot="<A>\n")  # same name/template/eos
+    assert end_of_turn(a) == "<A>\n"
+    end_of_turn(b)
+    assert b.calls == 0  # identical tokenizers share the cached value
+    c = TemplTok(eot="<A>\n", name="other/tok")
+    end_of_turn(c)
+    assert c.calls == 1  # a different name_or_path is probed separately
+    d = TemplTok(eot="<A>\n")
+    d.eos_token = "<eos2>"
+    end_of_turn(d)
+    assert d.calls == 1
+
+
+@pytest.mark.parametrize(
+    "value,expected",
+    [("all-linear", "all-linear"), (["all-linear"], "all-linear"), ("q_proj", ["q_proj"]),
+     (["q_proj", "v_proj"], ["q_proj", "v_proj"]), (("q_proj",), ["q_proj"])],
+)
+def test_lora_targets(value, expected):
+    from vsft.train import lora_targets
+
+    assert lora_targets(value) == expected

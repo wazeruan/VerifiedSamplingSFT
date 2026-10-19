@@ -32,9 +32,19 @@ def fake(monkeypatch):
     return made
 
 
+@pytest.fixture(autouse=True)
+def _late_bound_build_backend(monkeypatch):
+    """cli imports build_backend at module level; route it through vsft.backends.base at
+    call time so tests can patch `base_mod.build_backend` for every subcommand."""
+    import vsft.cli as cli_mod
+
+    monkeypatch.setattr(cli_mod, "build_backend", lambda m, b: base_mod.build_backend(m, b))
+
+
 def run(inp, out, *extra):
+    # verifier.model='' : the student grades its own candidates (one backend)
     return main(
-        ["boost", "--input", str(inp), "--output", str(out),
+        ["boost", "--input", str(inp), "--output", str(out), "--set", "verifier.model=''",
          "--set", "boost.max_rounds=2", "--set", "boost.num_candidates=2", *extra]
     )
 
@@ -402,3 +412,152 @@ def test_term_handler_per_subcommand(tmp_path, monkeypatch):
         lambda q, p, r: [("\\boxed{1}", True)] * 2, lambda *a: ACCEPT))
     assert run(FIXTURE, tmp_path / "b.jsonl") == 0
     assert signal.getsignal(signal.SIGTERM) is hpc.request_stop
+
+
+# ------------------------------------------------------------- verifier backend + labels
+
+
+def test_build_verifier_backend(monkeypatch):
+    import vsft.cli as cli_mod
+    from vsft.config import load_config
+
+    built = []
+    monkeypatch.setattr(base_mod, "build_backend", lambda m, b: built.append((m, b)) or "VB")
+    cfg = load_config(None, ["model.max_model_len=8192", "backend.kind=vllm",
+                             "backend.gpu_memory_utilization=0.5",
+                             "verifier.model=Qwen/Qwen3.5-9B"])
+    assert cli_mod.build_verifier_backend(cfg) == "VB"
+    [(m, b)] = built
+    assert m.name_or_path == "Qwen/Qwen3.5-9B" and m.max_model_len == 8192
+    assert b.gpu_memory_utilization == pytest.approx(0.35) and b.kind == "vllm"
+    # the student's config objects are not mutated
+    assert cfg.model.name_or_path == "Qwen/Qwen3.5-4B"
+    assert cfg.backend.gpu_memory_utilization == pytest.approx(0.5)
+    for ov in ([], ["verifier.model=''"], ["verifier.model=Qwen/Qwen3.5-4B"]):
+        assert cli_mod.build_verifier_backend(load_config(None, ov)) is None
+    assert len(built) == 1
+
+
+def test_boost_cli_builds_two_backends(tmp_path, monkeypatch):
+    built = {}
+
+    def build(m, b):
+        if m.name_or_path == "v/big":
+            be = FakeBackend(lambda *a: pytest.fail("verifier proposes"), lambda q, s: ACCEPT)
+        else:
+            be = FakeBackend(lambda q, p, r: [("So \\boxed{0}.", True)] * 2,
+                             lambda *a: pytest.fail("student grades"))
+        built[m.name_or_path] = (be, b.gpu_memory_utilization)
+        return be
+
+    monkeypatch.setattr(base_mod, "build_backend", build)
+    out = tmp_path / "o.jsonl"
+    assert main(["boost", "--input", str(FIXTURE), "--output", str(out),
+                 "--set", "model.name_or_path=s/small", "--set", "verifier.model=v/big",
+                 "--set", "verifier.gpu_memory_utilization=0.3",
+                 "--set", "boost.max_rounds=1", "--set", "boost.num_candidates=2",
+                 "--set", "verifier.use_answer_check=false"]) == 0
+    assert set(built) == {"s/small", "v/big"} and built["v/big"][1] == pytest.approx(0.3)
+    assert len(built["v/big"][0].verifier_calls) == 1
+    assert len(built["s/small"][0].proposal_calls) == 1
+    assert all(r["status"] == "accepted" for r in read_jsonl(out))
+
+
+def test_eval_label_in_summary(tmp_path, monkeypatch):
+    from vsft.backends.base import Generation
+
+    monkeypatch.setattr(base_mod, "build_backend",
+                        lambda m, b: FakeBackend(lambda *a: [], lambda *a: ""))
+    monkeypatch.setattr(FakeBackend, "generate", lambda self, p, n, temperature, top_p,
+                        max_tokens: [[Generation("\\boxed{42}", True)] for _ in p])
+    od = tmp_path / "sampling-1"
+    assert main(["eval", "--data", str(FIXTURE), "--output-dir", str(od),
+                 "--label", "sampling"]) == 0
+    s = json.loads((od / "eval_summary.json").read_text())
+    assert s["label"] == "sampling" and s["model"] == "Qwen/Qwen3.5-4B"
+    assert s["accuracy"]["tiny_math"] == pytest.approx(1 / 3)
+    od2 = tmp_path / "x"
+    main(["eval", "--data", str(FIXTURE), "--output-dir", str(od2)])
+    assert json.loads((od2 / "eval_summary.json").read_text())["label"] is None
+    # eval summaries feed straight into compare
+    from vsft.compare import collect
+
+    assert set(collect([tmp_path])) == {"sampling", "x"}
+
+
+# ------------------------------------------------------------- GPU memory logs / archs
+
+
+@pytest.mark.parametrize("mem", ["0, 30000 MiB, 81920 MiB", None])
+def test_boost_logs_gpu_memory(tmp_path, monkeypatch, fake, caplog, mem):
+    import logging
+
+    import vsft.hpc as hpc
+
+    calls = []
+    monkeypatch.setattr(hpc, "gpu_memory_used", lambda: calls.append(1) or mem)
+    with caplog.at_level(logging.INFO):
+        assert run(FIXTURE, tmp_path / "o.jsonl", "--set", "boost.examples_per_batch=1") == 0
+    text = caplog.text
+    if mem:
+        assert f"GPU memory after loading models: {mem}" in text
+        assert text.count("GPU memory after first batch") == 1
+        assert len(calls) == 2
+    else:
+        assert "GPU memory" not in text and len(calls) == 1
+
+
+def test_eval_records_architectures(tmp_path, monkeypatch, capsys):
+    import transformers
+
+    from vsft.backends.base import Generation
+    from vsft.compare import main as compare_main
+
+    monkeypatch.setattr(base_mod, "build_backend",
+                        lambda m, b: FakeBackend(lambda *a: [], lambda *a: ""))
+    monkeypatch.setattr(FakeBackend, "generate", lambda self, p, n, temperature, top_p,
+                        max_tokens: [[Generation("\\boxed{42}", True)] for _ in p])
+
+    class Auto:
+        @staticmethod
+        def from_pretrained(name, **kw):
+            if name == "broken/model":
+                raise OSError("nope")
+            return type("C", (), {"architectures": ["Qwen3_5ForConditionalGeneration"]})()
+
+    monkeypatch.setattr(transformers, "AutoConfig", Auto)
+    main(["eval", "--model", "some/model", "--data", str(FIXTURE), "--output-dir",
+          str(tmp_path / "base-1"), "--label", "base"])
+    main(["eval", "--model", "broken/model", "--data", str(FIXTURE), "--output-dir",
+          str(tmp_path / "sft-1"), "--label", "sft"])
+    a = json.loads((tmp_path / "base-1" / "eval_summary.json").read_text())
+    b = json.loads((tmp_path / "sft-1" / "eval_summary.json").read_text())
+    assert a["architectures"] == ["Qwen3_5ForConditionalGeneration"]
+    assert b["architectures"] is None
+    capsys.readouterr()
+    assert compare_main([str(tmp_path)]) == 0
+    out = capsys.readouterr().out
+    assert "base: some/model [Qwen3_5ForConditionalGeneration]" in out
+    assert "sft: broken/model [?]" in out
+
+
+def test_eval_rejects_duplicate_dataset_stems(tmp_path, monkeypatch):
+    from vsft.backends.base import Generation
+
+    monkeypatch.setattr(base_mod, "build_backend",
+                        lambda m, b: FakeBackend(lambda *a: [], lambda *a: ""))
+    monkeypatch.setattr(FakeBackend, "generate", lambda self, p, n, temperature, top_p,
+                        max_tokens: [[Generation("\\boxed{42}", True)] for _ in p])
+    other = tmp_path / "copy" / "tiny_math.jsonl"
+    other.parent.mkdir()
+    other.write_text(FIXTURE.read_text())
+    od = tmp_path / "ev"
+    with pytest.raises(SystemExit, match="share a name: \\['tiny_math'\\]"):
+        main(["eval", "--data", str(FIXTURE), str(other), "--output-dir", str(od)])
+    assert not (od / "eval_summary.json").exists()
+    # distinct stems are fine
+    third = tmp_path / "copy" / "tiny_math_b.jsonl"
+    third.write_text(FIXTURE.read_text())
+    assert main(["eval", "--data", str(FIXTURE), str(third), "--output-dir", str(od)]) == 0
+    assert set(json.loads((od / "eval_summary.json").read_text())["accuracy"]) == {
+        "tiny_math", "tiny_math_b"}

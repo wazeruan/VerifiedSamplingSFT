@@ -15,12 +15,22 @@ STAGE
   setup      CPU   build the shared venv from the run's code snapshot (needs internet)
   prepare    CPU   download MATH/MATH-500/GSM8K + model weights (needs internet)
   boost      GPU   verifier-guided boosting  -> RUN_DIR/boosted.jsonl
-  train      GPU   SFT on boosted traces     -> RUN_DIR/sft[-NNN]/final
-  eval       GPU   single-shot accuracy      -> RUN_DIR/eval/...
+  train      GPU   Sampling SFT on boosted traces       -> RUN_DIR/sft[-NNN]/final
+  eval       GPU   accuracy of the Sampling SFT model   -> RUN_DIR/eval/sampling-JOBID
+  train_sft  GPU   plain SFT baseline: raw expert traces of the same boosted rows -> RUN_DIR/sft-baseline
+  eval_sft   GPU   accuracy of the plain SFT model      -> RUN_DIR/eval/sft-JOBID
+  eval_base  GPU   accuracy of the initial (untrained) model -> RUN_DIR/eval/base-JOBID
   gpucheck   GPU   allocation/accelerator/environment check only
   pipeline         submit --stages (default setup,prepare,boost,train,eval) chained afterok
                    (no internet on compute nodes? run slurm/fetch_online.sh where your site
                    allows downloads, then: pipeline --stages boost,train,eval)
+  compare          Sampling SFT vs plain SFT vs base, as a dependency graph:
+                     setup -> prepare -> boost -> train     -> eval
+                                               -> train_sft -> eval_sft
+                                      -> eval_base
+                   (default: all 8 stages; --stages picks a subset, e.g. after fetch_online:
+                   --stages boost,train,eval,train_sft,eval_sft,eval_base).
+                   Then: slurm/results.sh RUN_DIR prints the comparison table.
 
 Required
   --account NAME          Slurm allocation account (forwarded to every sbatch)
@@ -31,7 +41,9 @@ Run directory (exactly one of)
   --resume RUN_DIR        reuse an existing run (its code snapshot and config.yaml)
 
 Resources (GPU stages; defaults suit one A100)
-  --gpus TYPE:N           default a100:1   (N>1 -> train uses accelerate launch)
+  --gpus TYPE:N           GPU stages, default a100:1 (boost/eval always use one GPU)
+  --train-gpus TYPE:N     train/train_sft only (default: --gpus); N>1 -> accelerate launch,
+                          e.g. a100:2 with --accelerate-config for FSDP full fine-tuning
   --cpus N                default 8
   --mem SIZE              host RAM per job, default 120G (not GPU memory)
   --time D-HH:MM:SS       default: per-stage #SBATCH value
@@ -97,10 +109,10 @@ die() {
 [[ $# -ge 1 ]] || { usage >&2; exit 2; }
 case "$1" in -h|--help) usage; exit 0 ;; esac
 STAGE="$1"; shift
-case "$STAGE" in setup|prepare|boost|train|eval|gpucheck|pipeline) ;; *) die "unknown stage '$STAGE' (see --help)" ;; esac
+case "$STAGE" in setup|prepare|boost|train|eval|train_sft|eval_sft|eval_base|gpucheck|pipeline|compare) ;; *) die "unknown stage '$STAGE' (see --help)" ;; esac
 
 ACCOUNT="" RUN_BASE="" RESUME="" CONFIG="" CONFIG_GIVEN=0 PROJECT_DIR="$DEFAULT_PROJECT_DIR"
-GPUS="a100:1" CPUS="8" MEM="120G" TIME="" PARTITION="" QOS="" RESERVATION="" CONSTRAINT=""
+GPUS="a100:1" TRAIN_GPUS="" CPUS="8" MEM="120G" TIME="" PARTITION="" QOS="" RESERVATION="" CONSTRAINT=""
 CPU_PARTITION="" CPU_MEM="" CPU_TIME="" MODULES=() VENV="" CACHE_ROOT="" HF_HOME_DIR=""
 OFFLINE=1 GPU_TYPE="A100" GPU_CAPABILITY="8.0" MIN_GPU_MEM_GB="39" PREEMPT_GRACE="" STAGES_OPT="" INPUT=""
 TRAIN_DATA="" TRAIN_RESUME="" ACC_CONFIG="" EVAL_MODEL="" EVAL_DATA=() DATASETS=""
@@ -116,6 +128,7 @@ while [[ $# -gt 0 ]]; do
     --config) need "$@"; CONFIG="$2"; CONFIG_GIVEN=1; shift 2 ;;
     --project-dir) need "$@"; PROJECT_DIR="$2"; shift 2 ;;
     --gpus) need "$@"; GPUS="$2"; shift 2 ;;
+    --train-gpus) need "$@"; TRAIN_GPUS="$2"; shift 2 ;;
     --cpus) need "$@"; CPUS="$2"; shift 2 ;;
     --mem) need "$@"; MEM="$2"; shift 2 ;;
     --time) need "$@"; TIME="$2"; shift 2 ;;
@@ -162,6 +175,11 @@ done
 [[ -z "$RUN_BASE" || -z "$RESUME" ]] || die "--run-dir and --resume are mutually exclusive"
 [[ -z "$RESUME" || "$CONFIG_GIVEN" -eq 0 ]] || die "--config only applies to fresh runs (a resumed run keeps its config.yaml)"
 [[ "$GPUS" =~ ^[A-Za-z0-9_]+:[1-8]$ ]] || die "--gpus must look like a100:1 .. a100:8"
+[[ -z "$TRAIN_GPUS" || "$TRAIN_GPUS" =~ ^[A-Za-z0-9_]+:[1-8]$ ]] || die "--train-gpus must look like a100:2"
+if [[ ( "$STAGE" == "pipeline" || "$STAGE" == "compare" ) && "${GPUS##*:}" -gt 1 ]]; then
+  # boost/eval run on one GPU; a multi-GPU --gpus would leave GPUs idle for hours.
+  die "--gpus ${GPUS} would apply to every GPU stage; use --train-gpus for multi-GPU training"
+fi
 [[ "$CPUS" =~ ^[1-9][0-9]*$ ]] || die "--cpus must be a positive integer"
 [[ "$MEM" =~ ^[1-9][0-9]*[KMGT]?$ ]] || die "--mem must look like 120G"
 [[ -z "$CPU_MEM" || "$CPU_MEM" =~ ^[1-9][0-9]*[KMGT]?$ ]] || die "--cpu-mem must look like 32G"
@@ -174,9 +192,14 @@ fi
 [[ "$MIN_GPU_MEM_GB" =~ ^[0-9]+([.][0-9]+)?$ ]] || die "--min-gpu-mem-gb must be a number"
 [[ -z "$GPU_CAPABILITY" || "$GPU_CAPABILITY" =~ ^[0-9]+\.[0-9]$ ]] || die "--gpu-capability must look like 8.0"
 [[ -z "$DEPEND_ON" || "$DEPEND_ON" =~ ^[0-9]+(:[0-9]+)*$ ]] || die "--depend-on must be JOBID[:JOBID...]"
-[[ -z "$TRAIN_RESUME" || "$STAGE" == "train" ]] || die "--train-resume is only valid for the train stage"
-[[ -z "$STAGES_OPT" || "$STAGE" == "pipeline" ]] || die "--stages is only valid with pipeline"
-[[ ${#EXTRA[@]} -eq 0 || "$STAGE" != "pipeline" ]] || die "extra vsft args need a single stage"
+[[ -z "$TRAIN_RESUME" || "$STAGE" == "train" || "$STAGE" == "train_sft" ]] || die "--train-resume is only valid for the train or train_sft stage"
+[[ -z "$STAGES_OPT" || "$STAGE" == "pipeline" || "$STAGE" == "compare" ]] || die "--stages is only valid with pipeline or compare"
+[[ ${#EXTRA[@]} -eq 0 || ( "$STAGE" != "pipeline" && "$STAGE" != "compare" ) ]] || die "extra vsft args need a single stage"
+if [[ "$STAGE" == "compare" ]]; then
+  # One model/data override would apply to several branches and break the comparison.
+  [[ -z "$EVAL_MODEL" && -z "$TRAIN_DATA" && -z "$TRAIN_RESUME" ]] \
+    || die "--eval-model, --train-data and --train-resume need a single stage, not compare"
+fi
 if [[ -n "$DATASETS" ]]; then
   for d in $DATASETS; do case "$d" in math|math500|gsm8k) ;; *) die "unknown dataset '$d'" ;; esac; done
 fi
@@ -192,18 +215,47 @@ fi
 
 abspath() { python3 -c 'import os,sys; print(os.path.abspath(os.path.expanduser(os.path.join(sys.argv[1], sys.argv[2]))))' "$PROJECT_DIR" "$1"; }
 
+# Job script per stage: the comparison variants reuse the train/eval scripts.
+script_of() {
+  case "$1" in train_sft) echo train ;; eval_sft|eval_base) echo eval ;; *) echo "$1" ;; esac
+}
+# Predecessor of each stage in the compare graph ("" = root).
+compare_pred_of() {
+  case "$1" in
+    setup) echo "" ;; prepare) echo setup ;; boost) echo prepare ;; train) echo boost ;;
+    eval) echo train ;; train_sft) echo boost ;; eval_sft) echo train_sft ;;
+    eval_base) echo prepare ;; *) echo "" ;;
+  esac
+}
 if [[ "$STAGE" == "pipeline" ]]; then
   IFS=',' read -r -a STAGES <<< "${STAGES_OPT:-setup,prepare,boost,train,eval}"
   [[ ${#STAGES[@]} -gt 0 ]] || die "--stages is empty"
   for s in "${STAGES[@]}"; do
     case "$s" in setup|prepare|boost|train|eval) ;; *) die "invalid pipeline stage '$s'" ;; esac
   done
+elif [[ "$STAGE" == "compare" ]]; then
+  IFS=',' read -r -a STAGES <<< "${STAGES_OPT:-setup,prepare,boost,train,eval,train_sft,eval_sft,eval_base}"
+  [[ ${#STAGES[@]} -gt 0 ]] || die "--stages is empty"
+  for s in "${STAGES[@]}"; do
+    case "$s" in setup|prepare|boost|train|eval|train_sft|eval_sft|eval_base) ;; *) die "invalid compare stage '$s'" ;; esac
+  done
 else
   STAGES=("$STAGE")
 fi
 has_stage() { local s; for s in "${STAGES[@]}"; do [[ "$s" == "$1" ]] && return 0; done; return 1; }
+if [[ "$STAGE" == "compare" ]]; then
+  # Topological order check: a stage's predecessor must come before it when both are given.
+  seen=" "
+  for s in "${STAGES[@]}"; do
+    p="$(compare_pred_of "$s")"
+    if [[ -n "$p" ]] && has_stage "$p" && [[ "$seen" != *" $p "* ]]; then
+      die "--stages: $p must come before $s"
+    fi
+    seen="$seen$s "
+  done
+fi
 for s in "${STAGES[@]}"; do
-  [[ -f "$PROJECT_DIR/slurm/jobs/$s.sbatch" ]] || die "missing job script slurm/jobs/$s.sbatch"
+  [[ -f "$PROJECT_DIR/slurm/jobs/$(script_of "$s").sbatch" ]] || die "missing job script for stage $s"
 done
 if has_stage setup && [[ ${#MODULES[@]} -eq 0 ]] && ! command -v uv >/dev/null; then
   die "setup needs uv on PATH in the job: install it (https://docs.astral.sh/uv/) or pass --module"
@@ -387,6 +439,21 @@ if [[ "$DRY_RUN" -eq 0 ]]; then
     td="$(cat "$RUN_DIR/status/train.dir" 2>/dev/null || true)"
     [[ -n "$td" && -f "$td/SUCCEEDED.json" ]] || die "no successfully trained model in run (pass --eval-model or include train)"
   fi
+  if has_stage train_sft && needs_existing boost; then
+    f="${TRAIN_DATA:-$RUN_DIR/boosted.jsonl}"; [[ -s "$f" ]] || die "plain-SFT data missing: $f (it trains on the boosted rows' expert traces; run boost or pass --train-data)"
+  fi
+  for s in eval eval_sft eval_base; do
+    # Test sets must exist now unless prepare is part of this submission.
+    if has_stage "$s" && ! has_stage prepare && [[ -z "$DEP" && ${#EVAL_DATA[@]} -eq 0 ]]; then
+      for f in math_l345_test math500_test gsm8k_test; do
+        [[ -s "$RUN_DIR/data/$f.jsonl" ]] || die "$s: test set missing: $RUN_DIR/data/$f.jsonl (run prepare)"
+      done
+    fi
+  done
+  if has_stage eval_sft && needs_existing train_sft && [[ -z "$EVAL_MODEL" ]]; then
+    td="$(cat "$RUN_DIR/status/train_sft.dir" 2>/dev/null || true)"
+    [[ -n "$td" && -f "$td/SUCCEEDED.json" ]] || die "no successfully trained plain-SFT model in run (include train_sft)"
+  fi
   if ! has_stage setup; then
     # Cheap login-node check so a stale/missing venv fails now, not after hours in queue.
     [[ -x "$VENV/bin/python" ]] || die "venv missing at $VENV: submit the setup stage (or slurm/fetch_online.sh) first"
@@ -407,6 +474,33 @@ if [[ "$DRY_RUN" -eq 0 ]]; then
   fi
 fi
 
+# A separate verifier shares the boost GPU with the student: that needs an 80 GB A100.
+# Checked here (stdlib YAML subset reader) so a 40 GB node never wastes the queue wait.
+cfg_for_check="$RUN_CONFIG"; [[ -f "$cfg_for_check" ]] || cfg_for_check="${CONFIG:-}"
+if has_stage boost && [[ -n "$cfg_for_check" && -f "$cfg_for_check" ]]; then
+  sep_verifier="$(python3 - "$cfg_for_check" <<'PY'
+import re, sys
+sec, vals = None, {}
+for line in open(sys.argv[1]):
+    line = line.split("#", 1)[0].rstrip()
+    if not line.strip():
+        continue
+    m = re.match(r"^(\w+):\s*$", line)
+    if m:
+        sec = m.group(1); continue
+    m = re.match(r"^\s+(\w+):\s*(.*)$", line)
+    if m and sec:
+        vals[(sec, m.group(1))] = m.group(2).strip().strip("'\"")
+v = vals.get(("verifier", "model"), "")
+s = vals.get(("model", "name_or_path"), "")
+print("1" if v and v != s else "0")
+PY
+)"
+  if [[ "$sep_verifier" == "1" ]] && awk -v m="$MIN_GPU_MEM_GB" 'BEGIN{exit !(m < 79)}'; then
+    die "this config runs a separate verifier next to the student on the boost GPU, which needs an 80 GB A100: pass --min-gpu-mem-gb 79 (plus your site's 80 GB constraint/partition), or set verifier.model: \"\" for 40 GB cards"
+  fi
+fi
+
 # ---------------------------------------------------------------- submission
 FIRST_JOB="" FIRST_STAGE="" FIRST_RECEIPT="" FIRST_LOG="" LAST_ID=""
 
@@ -423,7 +517,9 @@ submit_stage() {  # submit_stage STAGE DEPENDENCY_IDS
   local sb=(sbatch --parsable --account "$ACCOUNT" --job-name "vsft-$stage" --chdir "$RUN_DIR"
             --output "$log_out" --error "$log_err" --comment "$token" --export ALL)
   if [[ "$gpu" -eq 1 ]]; then
-    sb+=(--gpus-per-node "$GPUS" --cpus-per-task "$CPUS" --mem "$MEM")
+    local gpus="$GPUS"
+    case "$stage" in train|train_sft) gpus="${TRAIN_GPUS:-$GPUS}" ;; esac
+    sb+=(--gpus-per-node "$gpus" --cpus-per-task "$CPUS" --mem "$MEM")
     [[ -n "$PARTITION" ]] && sb+=(--partition "$PARTITION")
     [[ -n "$TIME" ]] && sb+=(--time "$TIME")
     [[ -n "$CONSTRAINT" ]] && sb+=(--constraint "$CONSTRAINT")
@@ -435,7 +531,7 @@ submit_stage() {  # submit_stage STAGE DEPENDENCY_IDS
   [[ -n "$QOS" ]] && sb+=(--qos "$QOS")
   [[ -n "$RESERVATION" ]] && sb+=(--reservation "$RESERVATION")
   [[ -n "$dep" ]] && sb+=(--dependency "afterok:$dep" --kill-on-invalid-dep=yes)
-  sb+=("$CODE_DIR/slurm/jobs/$stage.sbatch")
+  sb+=("$CODE_DIR/slurm/jobs/$(script_of "$stage").sbatch")
 
   if [[ "$DRY_RUN" -eq 1 ]]; then
     printf '[dry-run] %s:' "$stage"; printf ' %q' "${sb[@]}"; printf '\n'
@@ -523,13 +619,23 @@ submit_stage() {  # submit_stage STAGE DEPENDENCY_IDS
 }
 
 log "run dir: $RUN_DIR"
+USER_DEP="$DEP"
+STAGE_IDS=" "   # " stage:jobid " pairs for the compare graph (bash 3.2: no assoc arrays)
+id_of() { local x; for x in $STAGE_IDS; do [[ "${x%%:*}" == "$1" ]] && { echo "${x#*:}"; return; }; done; }
 first=1
 for s in "${STAGES[@]}"; do
-  # Reconcile every predecessor immediately before each submission.
-  if [[ "$first" -eq 0 && "$DRY_RUN" -eq 0 && -n "$DEP" ]]; then
+  if [[ "$STAGE" == "compare" ]]; then
+    # Depend on this stage's graph predecessor if it was submitted now, else on --depend-on.
+    p="$(compare_pred_of "$s")"
+    DEP="$USER_DEP"
+    if [[ -n "$p" ]] && has_stage "$p"; then DEP="$(id_of "$p")"; fi
+    if [[ "$DRY_RUN" -eq 0 && -n "$DEP" ]]; then DEP="$(reconcile_dependencies "$DEP")"; fi
+  elif [[ "$first" -eq 0 && "$DRY_RUN" -eq 0 && -n "$DEP" ]]; then
+    # Linear chain: reconcile every predecessor immediately before each submission.
     DEP="$(reconcile_dependencies "$DEP")"
   fi
   submit_stage "$s" "$DEP"
+  STAGE_IDS="$STAGE_IDS$s:$LAST_ID "
   DEP="$LAST_ID"; first=0
 done
 [[ "$DRY_RUN" -eq 1 ]] && { log "dry run complete; nothing submitted"; exit 0; }

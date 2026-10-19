@@ -12,4 +12,7 @@ vsft_init
 vsft_preflight gpu
 _mark STARTED "node=$(hostname)"
 vsft_run "$VSFT_PY" -c "import vllm, torch; print('vllm', vllm.__version__, 'cuda', torch.version.cuda)"
+# Qwen3.5's Gated-DeltaNet layers run on flash-linear-attention Triton kernels: launch one
+# on the GPU so a triton/torch/fla mismatch shows up here, not hours into train or boost.
+vsft_run "$VSFT_PY" -m vsft.hpc fla-check
 vsft_succeed

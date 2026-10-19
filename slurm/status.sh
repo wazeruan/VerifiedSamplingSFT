@@ -7,7 +7,7 @@ RUN_DIR="$(cd "$1" && pwd)" || exit 2
 [[ -f "$RUN_DIR/manifest.json" ]] || { echo "not a run dir (no manifest.json): $RUN_DIR" >&2; exit 2; }
 R="$(dirname "${BASH_SOURCE[0]}")/lib/receipt.py"
 printf '%-9s %-11s %-10s %-14s %s\n' STAGE STATE JOB SCHEDULER "TIME (UTC) / LOG"
-for stage in setup prepare boost train eval gpucheck; do  # states: SUBMITTED PREFLIGHT_OK STARTED SUCCEEDED FAILED
+for stage in setup prepare boost train eval train_sft eval_sft eval_base gpucheck; do  # states: SUBMITTED PREFLIGHT_OK STARTED SUCCEEDED FAILED
   f="$RUN_DIR/status/$stage.state"
   [[ -f "$f" ]] || continue
   state="$(python3 "$R" get "$f" state)"; job="$(python3 "$R" get "$f" job_id)"

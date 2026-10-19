@@ -317,6 +317,7 @@ def test_eval_requires_trained_model(h):
     td = run / "sft"
     (td / "final").mkdir(parents=True)
     (run / "status" / "train.dir").write_text(f"{td}\n")
+    h.make_test_sets(run)
     r = h.submit("eval", "--no-monitor", "--resume", run, run_dir=None)
     assert r.returncode == 2 and "trained model" in r.stderr  # no SUCCEEDED.json yet
     (td / "SUCCEEDED.json").write_text('{"job_id": "1"}')

@@ -332,6 +332,7 @@ def test_eval_job_refuses_without_success_record(h):
     (td / "final").mkdir(parents=True)
     (run / "status" / "train.dir").write_text(f"{td}\n")
     (td / "SUCCEEDED.json").write_text('{"job_id": "1"}')
+    h.make_test_sets(run)
     r = h.submit("eval", "--no-monitor", "--resume", run, run_dir=None,
                  env={**RUN, "FAKE_PENDING_SECS": "4"})
     assert r.returncode == 3, r.stderr
@@ -373,6 +374,7 @@ def _grace(h, stage, override=None):
 @pytest.mark.parametrize("stage,lead,grace", [
     ("boost", 600, 500), ("train", 600, 500), ("eval", 300, 240),
     ("setup", 120, 60), ("prepare", 120, 60), ("gpucheck", 60, 10),
+    ("train_sft", 600, 500), ("eval_sft", 300, 240), ("eval_base", 300, 240),
 ])
 def test_default_grace(h, stage, lead, grace):
     assert _grace(h, stage) == (lead, grace)
@@ -387,8 +389,10 @@ def test_eval_grace_capped(h):
 
 
 def test_signal_lead_matches_sbatch_directives(h):
-    for stage in ("setup", "prepare", "boost", "train", "eval", "gpucheck"):
-        text = (h.project / "slurm" / "jobs" / f"{stage}.sbatch").read_text()
+    script = {"train_sft": "train", "eval_sft": "eval", "eval_base": "eval"}
+    for stage in ("setup", "prepare", "boost", "train", "eval", "gpucheck", "train_sft",
+                  "eval_sft", "eval_base"):
+        text = (h.project / "slurm" / "jobs" / f"{script.get(stage, stage)}.sbatch").read_text()
         m = re.search(r"#SBATCH --signal=B:USR1@(\d+)", text)
         lead, grace = _grace(h, stage)
         if m:
