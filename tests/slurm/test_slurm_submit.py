@@ -48,7 +48,7 @@ def test_code_snapshot(h):
         assert (code / p).is_file(), p
     assert not list(code.rglob("__pycache__"))
     assert (run / "config.yaml").read_bytes() == (
-        h.project / "configs/a100/math_qwen3b.yaml").read_bytes()
+        h.project / "configs/a100/math_qwen35.yaml").read_bytes()
     call = h.sbatch_calls()[0]
     assert call["script"] == str(code / "slurm/jobs/gpucheck.sbatch")
     assert _opt(call["argv"], "--chdir") == str(run)
@@ -301,11 +301,11 @@ def test_extra_args_nul_separated(h):
 
 
 def test_eval_data_repeatable_and_model_id(h):
-    run_ok = h.submit("eval", "--no-monitor", "--eval-model", "Qwen/Qwen2.5-0.5B",
+    run_ok = h.submit("eval", "--no-monitor", "--eval-model", "Qwen/Qwen3.5-0.8B",
                       "--eval-data", "a b.jsonl", "--eval-data", "/abs/c.jsonl")
     assert run_ok.returncode == 3, run_ok.stderr
     env = h.sbatch_calls()[0]["env"]
-    assert env["VSFT_EVAL_MODEL"] == "Qwen/Qwen2.5-0.5B"  # hub id is not made absolute
+    assert env["VSFT_EVAL_MODEL"] == "Qwen/Qwen3.5-0.8B"  # hub id is not made absolute
     assert env["VSFT_EVAL_DATA"].splitlines() == [str(h.project / "a b.jsonl"), "/abs/c.jsonl"]
 
 
@@ -418,7 +418,7 @@ def test_run_dir_with_spaces_end_to_end(h):
 
 
 def test_receipt_env_records_multiline_eval_data(h):
-    r = h.submit("eval", "--no-monitor", "--eval-model", "Qwen/Qwen2.5-0.5B",
+    r = h.submit("eval", "--no-monitor", "--eval-model", "Qwen/Qwen3.5-0.8B",
                  "--eval-data", "/d/a.jsonl", "--eval-data", "/d/b.jsonl")
     assert r.returncode == 3, r.stderr
     rec = h.rjson(next((h.runs / "x" / "receipts").glob("eval-*.json")))

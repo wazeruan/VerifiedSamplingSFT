@@ -16,7 +16,7 @@ import yaml
 
 @dataclass
 class ModelConfig:
-    name_or_path: str = "Qwen/Qwen2.5-0.5B-Instruct"
+    name_or_path: str = "Qwen/Qwen3.5-4B"
     dtype: str = "auto"  # auto | bfloat16 | float16 | float32
     device: str = "auto"  # auto | cuda | mps | cpu (HF backend only)
     trust_remote_code: bool = False
@@ -56,7 +56,11 @@ class BoostConfig:
 
 @dataclass
 class VerifierConfig:
-    # The verifier is the same local model as the student (shared backend).
+    # Larger model that grades candidates. Empty = use the student model itself.
+    model: str = "Qwen/Qwen3.5-9B"
+    # Share of GPU memory for the verifier when it runs as a second vLLM engine next to
+    # the student (ignored by the HF backend and when `model` is empty).
+    gpu_memory_utilization: float = 0.35
     max_new_tokens: int = 256
     temperature: float = 0.0
     use_answer_check: bool = True  # also require the extracted final answer to match
@@ -222,6 +226,8 @@ def validate(cfg: Config) -> None:
         raise ValueError("boost.on_failure must be expert | drop | last")
     if not (0 < b.top_p <= 1) or b.temperature < 0:
         raise ValueError("boost.top_p must be in (0, 1] and temperature >= 0")
+    if not 0 < v.gpu_memory_utilization < 1:
+        raise ValueError("verifier.gpu_memory_utilization must be in (0, 1)")
     if v.max_new_tokens < 1 or v.max_step_chars < 20:
         raise ValueError("verifier.max_new_tokens >= 1 and max_step_chars >= 20 required")
     t = cfg.train

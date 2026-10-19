@@ -1,14 +1,15 @@
-# MATH L3-5 with Qwen2.5-3B (the paper's math setting) on a single A100 (40 or 80 GB).
+# MATH L3-5 with Qwen3.5: student Qwen3.5-4B, verifier Qwen3.5-9B, on one A100 (40 or 80 GB).
+# Both models are served from one GPU: the student gets 50% and the verifier 35% of memory.
 # Boosting uses vLLM; training uses LoRA by default so it also fits a 40 GB A100.
 # Paper hyperparameters: T=1856 max length, N_MCMC=10; SFT lr {5e-5,1e-5,5e-6},
 # epochs {1,2}, batch {16,32,64}, AdamW + cosine, grad clip 1.0.
 model:
-  name_or_path: Qwen/Qwen2.5-3B
+  name_or_path: Qwen/Qwen3.5-4B
   dtype: bfloat16           # A100 supports bf16
   max_model_len: 8192      # prompt = question + expert + growing prefix (+1856 new)
 backend:
   kind: vllm
-  gpu_memory_utilization: 0.85
+  gpu_memory_utilization: 0.50   # student engine; the verifier engine gets verifier.* share
 boost:
   num_candidates: 8
   max_rounds: 6
@@ -19,6 +20,8 @@ boost:
   proposal_prompt: generic
   examples_per_batch: 256   # examples advanced together per round (vLLM batches them)
 verifier:
+  model: Qwen/Qwen3.5-9B
+  gpu_memory_utilization: 0.35
   max_new_tokens: 256
   use_answer_check: true
 train:

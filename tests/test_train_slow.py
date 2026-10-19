@@ -1,4 +1,4 @@
-"""Real-model `vsft train` / `vsft eval` with Qwen2.5-0.5B-Instruct (LoRA, CPU/MPS).
+"""Real-model `vsft train` / `vsft eval` with Qwen3.5-0.8B (LoRA, CPU/MPS).
 
 Run with: VSFT_RUN_SLOW=1 HF_HUB_OFFLINE=1 HF_HOME=<cache dir> uv run pytest -m slow
 """
@@ -13,7 +13,7 @@ from vsft.cli import main
 
 pytestmark = pytest.mark.slow
 
-MODEL = "Qwen/Qwen2.5-0.5B-Instruct"
+MODEL = "Qwen/Qwen3.5-0.8B"
 FIXTURE = Path(__file__).parent / "fixtures" / "tiny_math.jsonl"
 SETTINGS = [
     f"model.name_or_path={MODEL}", "train.lora_r=8", "train.num_epochs=1",

@@ -1,6 +1,6 @@
-# Tiny end-to-end run on a laptop (CPU/MPS): Qwen2.5-0.5B-Instruct, HF backend.
+# Tiny end-to-end run on a laptop (CPU/MPS): Qwen3.5-0.8B as student and verifier, HF backend.
 model:
-  name_or_path: Qwen/Qwen2.5-0.5B-Instruct
+  name_or_path: Qwen/Qwen3.5-0.8B
   max_model_len: 2048
 backend:
   kind: hf
@@ -12,6 +12,7 @@ boost:
   max_new_tokens: 256
   examples_per_batch: 4
 verifier:
+  model: ""   # laptop run: the student grades its own candidates
   max_new_tokens: 128
 train:
   num_epochs: 1

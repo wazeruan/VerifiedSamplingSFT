@@ -8,7 +8,23 @@ import sys
 from collections import Counter
 from pathlib import Path
 
+from vsft.backends.base import build_backend
 from vsft.config import load_config
+
+
+def build_verifier_backend(cfg):
+    """Second backend for the verifier model, or None to share the student's backend."""
+    if not cfg.verifier.model or cfg.verifier.model == cfg.model.name_or_path:
+        return None
+    import dataclasses
+
+    vmodel = dataclasses.replace(cfg.model, name_or_path=cfg.verifier.model)
+    vbackend = dataclasses.replace(
+        cfg.backend, gpu_memory_utilization=cfg.verifier.gpu_memory_utilization
+    )
+    logging.info("verifier: %s (student: %s)", vmodel.name_or_path, cfg.model.name_or_path)
+    return build_backend(vmodel, vbackend)
+
 
 EXIT_STOPPED = 75  # graceful stop on request (preemption / time-limit warning); resumable
 
@@ -51,7 +67,12 @@ def cmd_boost(args) -> int:
     if not todo:
         notify_started(todo=0)
     else:
-        booster = Booster(build_backend(cfg.model, cfg.backend), cfg.boost, cfg.verifier)
+        booster = Booster(
+            build_backend(cfg.model, cfg.backend),
+            cfg.boost,
+            cfg.verifier,
+            verifier_backend=build_verifier_backend(cfg),
+        )
         notify_started(todo=len(todo))
         bs = cfg.boost.examples_per_batch
         for i in range(0, len(todo), bs):

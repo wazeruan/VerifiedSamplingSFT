@@ -7,7 +7,7 @@ For each example (question q, expert trace tau, optional reference answer a):
         K candidates  x_k = prefix + continuation_k,   continuation_k ~ kappa(. | q, tau, prefix)
         score_k       = mean_t log p_student(x_k,t | q, x_k,<t)   # plain task prompt
         winner        = argmax score, ties within eps broken by overlap with tau
-        verdict       = Verifier(q, tau, a, winner)    # same model, prompted with tau
+        verdict       = Verifier(q, tau, a, winner)    # larger verifier model, prompted with tau
         if verdict.correct: emit winner; stop
         prefix        = winner[: verdict.restart_char]  # regenerate from the wrong step
     on exhaustion: emit tau (on_failure=expert), drop, or emit last winner
@@ -118,10 +118,11 @@ class BoostStopped(Exception):
 
 
 class Booster:
-    def __init__(self, backend: Backend, boost_cfg, verifier_cfg):
+    def __init__(self, backend: Backend, boost_cfg, verifier_cfg, verifier_backend=None):
+        # The student generates and scores; the (possibly larger) verifier grades.
         self.backend = backend
         self.cfg = boost_cfg
-        self.verifier = Verifier(backend, verifier_cfg)
+        self.verifier = Verifier(verifier_backend or backend, verifier_cfg)
 
     # -- scoring -----------------------------------------------------------------------
     def score(

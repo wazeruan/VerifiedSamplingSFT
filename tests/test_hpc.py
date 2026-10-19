@@ -174,10 +174,10 @@ def test_require_model_real_qwen_cache(monkeypatch):
     import huggingface_hub.constants as C
 
     cache = ROOT / ".scratch" / "hf" / "hub"
-    if not (cache / "models--Qwen--Qwen2.5-0.5B-Instruct").is_dir():
+    if not (cache / "models--Qwen--Qwen3.5-0.8B").is_dir():
         pytest.skip("Qwen not in .scratch/hf")
     monkeypatch.setattr(C, "HF_HUB_CACHE", str(cache))
-    assert hpc.model_available("Qwen/Qwen2.5-0.5B-Instruct") is None
+    assert hpc.model_available("Qwen/Qwen3.5-0.8B") is None
 
 
 def test_stamp_lock_and_require_lock(tmp_path, monkeypatch, capsys):

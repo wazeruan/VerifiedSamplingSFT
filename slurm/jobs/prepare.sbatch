@@ -10,7 +10,7 @@
 source "${VSFT_CODE_DIR:?submit through slurm/submit.sh}/slurm/lib/job_common.sh"
 vsft_init
 unset HF_HUB_OFFLINE HF_DATASETS_OFFLINE TRANSFORMERS_OFFLINE
-vsft_probe_network "https://huggingface.co/api/models/Qwen/Qwen2.5-0.5B"
+vsft_probe_network "https://huggingface.co/api/models/Qwen/Qwen3.5-0.8B"
 vsft_preflight
 vsft_mark_started_cpu
 DATA_DIR="$VSFT_RUN_DIR/data"

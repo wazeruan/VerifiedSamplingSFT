@@ -40,7 +40,7 @@ Resources (GPU stages; defaults suit one A100)
   --cpu-mem SIZE, --cpu-time T   overrides for CPU stages
 
 Environment and storage
-  --config PATH           vsft YAML (default configs/a100/math_qwen3b.yaml), fresh runs only
+  --config PATH           vsft YAML (default configs/a100/math_qwen35.yaml), fresh runs only
   --module NAME           `module load NAME` inside each job (repeatable)
   --venv PATH             environment (default CACHE_ROOT/venvs/<uv.lock sha>: one per lock,
                           so runs with different locks never rebuild each other's venv)
@@ -333,7 +333,7 @@ if [[ -n "$RESUME" ]]; then
   [[ -f "$RUN_DIR/config.yaml" ]] || die "--resume $RUN_DIR has no config.yaml"
   [[ -f "$RUN_DIR/code/uv.lock" && -d "$RUN_DIR/code/src/vsft" ]] || die "--resume $RUN_DIR has no code snapshot"
 else
-  CONFIG="$(abspath "${CONFIG:-configs/a100/math_qwen3b.yaml}")"
+  CONFIG="$(abspath "${CONFIG:-configs/a100/math_qwen35.yaml}")"
   [[ -f "$CONFIG" ]] || die "config not found: $CONFIG"
   base="$(abspath "${RUN_BASE:-runs/$(basename "${CONFIG%.*}")}")"
   if [[ "$DRY_RUN" -eq 1 ]]; then

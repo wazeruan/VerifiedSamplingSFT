@@ -9,7 +9,7 @@ replaces the random walk with a **score → verify → regenerate** loop.
 ## Algorithm
 
 Each example has a question $q$, an expert trace $\tau$ and, optionally, a reference answer $a$.
-The **student** $p_\theta$ is the model being finetuned, and it plays all three roles below.
+The **student** $p_\theta$ is the model being finetuned. It generates and scores the candidates. A separate, larger **verifier** grades them.
 
 ```
 prefix ← ""
@@ -21,7 +21,8 @@ for round r = 0 … max_rounds-1:
     # 3. Select: the largest average log-prob wins; candidates within ε of it are tied,
     #    and ties go to the candidate with the highest token-F1 overlap with τ
     winner = argmax_k s_k   (ε-band tie-break)
-    # 4. Verify: the same model, given τ (and a), checks the winner split into numbered steps
+    # 4. Verify: a larger verifier LLM (Qwen3.5-9B; the student for laptop runs), given τ and a,
+    #    checks the winner split into numbered steps
     #    and returns {"correct": bool, "first_error_step": j}
     if correct (and the extracted final answer matches a):  emit winner; stop
     prefix ← winner[: end of step j-1]        # regenerate from the first wrong step's position
@@ -72,22 +73,22 @@ uv run vsft prepare math math500 gsm8k --out-dir data/processed
 ```
 
 ```bash
-uv run vsft boost --config configs/a100/math_qwen3b.yaml --input data/processed/math_l345_train.jsonl --output data/boosted/math_qwen3b.jsonl
+uv run vsft boost --config configs/a100/math_qwen35.yaml --input data/processed/math_l345_train.jsonl --output data/boosted/math_qwen35.jsonl
 ```
 
 ```bash
-uv run vsft train --config configs/a100/math_qwen3b.yaml --data data/boosted/math_qwen3b.jsonl --output-dir runs/sft-sampling
+uv run vsft train --config configs/a100/math_qwen35.yaml --data data/boosted/math_qwen35.jsonl --output-dir runs/sft-sampling
 ```
 
 ```bash
-uv run vsft eval --config configs/a100/math_qwen3b.yaml --model runs/sft-sampling/final --data data/processed/math_l345_test.jsonl data/processed/math500_test.jsonl data/processed/gsm8k_test.jsonl --output-dir runs/sft-sampling/eval
+uv run vsft eval --config configs/a100/math_qwen35.yaml --model runs/sft-sampling/final --data data/processed/math_l345_test.jsonl data/processed/math500_test.jsonl data/processed/gsm8k_test.jsonl --output-dir runs/sft-sampling/eval
 ```
 
 - **Baseline SFT on the raw expert traces:** add `--set train.source=expert`.
 - **Resume interrupted runs:** `boost` resumes automatically by skipping ids already in `--output`. For `train`, pass `--resume-from runs/<run>/state-epochN`.
 - **Override any config value:** `--set section.key=value`.
 
-Memory: fully finetuning Qwen2.5-3B with fp32 master weights and AdamW needs about 50 GB plus activations, so use an 80 GB A100. On 40 GB cards, set `train.lora_r=16` or use FSDP across GPUs via `accelerate launch`.
+Memory: fully finetuning Qwen3.5-4B with fp32 master weights and AdamW needs about 50 GB plus activations, so use an 80 GB A100. On 40 GB cards, set `train.lora_r=16` or use FSDP across GPUs via `accelerate launch`.
 
 ## Slurm / SSH on A100
 
@@ -148,7 +149,7 @@ You never call `sbatch` directly: `slurm/submit.sh` is a noninteractive wrapper 
 - `--preempt-grace` defaults to 500 s for boost/train and 240 s for eval. It is always capped at each stage's warning lead minus 60 s.
 - Only the USR1 warning path reliably checkpoints large training states. A TERM-only stop (`scancel`, preemption) saves state only if the save finishes within the site's `KillWait`/`GraceTime`, usually about 30 s. Eval and prepare stop promptly on TERM.
 
-**Storage.** Point `--cache-root` (HF, uv, vLLM and Triton caches) and `--run-dir` at scratch storage, not `/home` or `/project`. Training states rotate (`train.keep_last_states`, default 2). Full fine-tuning keeps about 37 GB per state, so with `math_qwen3b_full80g.yaml` pass `--min-free-gb 150`. Copy the final models you want to keep to project space.
+**Storage.** Point `--cache-root` (HF, uv, vLLM and Triton caches) and `--run-dir` at scratch storage, not `/home` or `/project`. Training states rotate (`train.keep_last_states`, default 2). Full fine-tuning keeps about 37 GB per state, so with `math_qwen35_full80g.yaml` pass `--min-free-gb 150`. Copy the final models you want to keep to project space.
 
 ### Typical Alliance-style cluster (compute nodes have no internet)
 
@@ -232,8 +233,8 @@ slurm/remote.sh status --host mycluster --remote-dir '~/vsft' /scratch/USER/vsft
 - `--mem` defaults to `120G` of host RAM. This fits a per-A100 share such as Narval's (about 124 GB and 12 cores per GPU); check your site's share.
 - `--gpus a100:N`, `--partition`, `--qos` and `--constraint` are all configurable. No site values are hard-coded.
 - Pick the config for your card:
-  - `configs/a100/math_qwen3b.yaml`: LoRA SFT, fits a 40 GB A100.
-  - `configs/a100/math_qwen3b_full80g.yaml`: full SFT. Submit it with `--min-gpu-mem-gb 79`.
+  - `configs/a100/math_qwen35.yaml`: LoRA SFT, fits a 40 GB A100.
+  - `configs/a100/math_qwen35_full80g.yaml`: full SFT. Submit it with `--min-gpu-mem-gb 79`.
 - For multi-GPU FSDP, add `--gpus a100:4 --accelerate-config configs/accelerate/fsdp_a100.yaml`.
 
 ## Tests
@@ -246,4 +247,4 @@ uv run pytest -q
 VSFT_RUN_SLOW=1 uv run pytest -q -m slow
 ```
 
-The slow tests download and run Qwen2.5-0.5B-Instruct.
+The slow tests download and run Qwen3.5-0.8B.

@@ -211,7 +211,7 @@ def test_preflight_require_lock(tmp_path):
 
 
 def test_config_get(tmp_path):
-    cfg = REPO / "configs" / "a100" / "math_qwen3b.yaml"
+    cfg = REPO / "configs" / "a100" / "math_qwen35.yaml"
     p = hpc("config-get", "--config", cfg, "model.name_or_path")
     assert p.returncode == 0 and p.stdout.strip()
     import yaml

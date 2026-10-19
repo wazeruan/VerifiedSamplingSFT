@@ -1,4 +1,4 @@
-"""Real-model integration test (HF backend, Qwen2.5-0.5B-Instruct on CPU).
+"""Real-model integration test (HF backend, Qwen3.5-0.8B on CPU).
 
 Run with: VSFT_RUN_SLOW=1 HF_HUB_OFFLINE=1 HF_HOME=<cache dir> uv run pytest -m slow
 """
@@ -7,7 +7,7 @@ import pytest
 
 pytestmark = pytest.mark.slow
 
-MODEL = "Qwen/Qwen2.5-0.5B-Instruct"
+MODEL = "Qwen/Qwen3.5-0.8B"
 
 
 @pytest.fixture(scope="module")
