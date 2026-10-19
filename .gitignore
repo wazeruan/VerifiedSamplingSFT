@@ -1,0 +1,29 @@
+# Python
+__pycache__/
+*.py[oc]
+build/
+dist/
+wheels/
+*.egg-info
+.pytest_cache/
+.ruff_cache/
+
+# Environments & secrets
+.venv/
+.env
+.env.*
+
+# Generated outputs
+runs/
+data/raw/
+data/processed/
+data/boosted/
+checkpoints/
+logs/
+wandb/
+*.jsonl
+!tests/fixtures/*.jsonl
+
+# Local scratch (model cache, smoke runs)
+.scratch/
+.cache/

@@ -1,0 +1,25 @@
+# Tiny end-to-end run on a laptop (CPU/MPS): Qwen2.5-0.5B-Instruct, HF backend.
+model:
+  name_or_path: Qwen/Qwen2.5-0.5B-Instruct
+  max_model_len: 2048
+backend:
+  kind: hf
+  gen_batch_size: 4
+  score_batch_size: 4
+boost:
+  num_candidates: 3
+  max_rounds: 3
+  max_new_tokens: 256
+  examples_per_batch: 4
+verifier:
+  max_new_tokens: 128
+train:
+  num_epochs: 1
+  per_device_batch_size: 1
+  grad_accum_steps: 1
+  max_seq_len: 512
+  lora_r: 8
+  log_every_steps: 1
+eval:
+  max_new_tokens: 256
+  batch_size: 4

@@ -1,0 +1,42 @@
+[project]
+name = "vsft"
+version = "0.1.0"
+description = "Verifier-guided sampling SFT: boost expert traces toward the student distribution, then SFT."
+readme = "README.md"
+authors = [
+    { name = "Playitcool_", email = "129354153+Playitcooool@users.noreply.github.com" }
+]
+requires-python = ">=3.11"
+dependencies = [
+    "accelerate>=1.0",
+    "datasets>=3.0",
+    "peft>=0.13",
+    "pyyaml>=6.0.3",
+    "torch>=2.4",
+    "transformers>=4.56",
+]
+
+[project.optional-dependencies]
+vllm = ["vllm>=0.8; sys_platform == 'linux'"]
+
+[project.scripts]
+vsft = "vsft.cli:main"
+
+[build-system]
+requires = ["uv_build>=0.11.21,<0.12.0"]
+build-backend = "uv_build"
+
+[dependency-groups]
+dev = [
+    "pytest>=9.1.1",
+    "ruff>=0.17.1",
+]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+
+[tool.ruff]
+line-length = 100
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "B", "UP"]
