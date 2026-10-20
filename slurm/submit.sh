@@ -79,6 +79,9 @@ Stage inputs
   --datasets "A B"        datasets for prepare (default "math math500 gsm8k")
   --depend-on JOBID[:..]  afterok dependency for the first submitted stage (reconciled)
   --allow-duplicate       submit even if the same stage of this run is queued/running
+  --refresh-code          with --resume: replace the run's code snapshot with this checkout
+                          (keeps config.yaml, data and outputs; the old snapshot is kept as
+                          code.prev-<UTC>; refused while any job of the run is queued/running)
 
 Submission behaviour
   --monitor-timeout SEC   bounded startup monitoring of the first job (default 300)
@@ -116,7 +119,7 @@ GPUS="h100:1" TRAIN_GPUS="" CPUS="8" MEM="120G" TIME="" PARTITION="" QOS="" RESE
 CPU_PARTITION="" CPU_MEM="" CPU_TIME="" MODULES=() VENV="" CACHE_ROOT="" HF_HOME_DIR=""
 OFFLINE=1 GPU_TYPE="H100" GPU_CAPABILITY="9.0" MIN_GPU_MEM_GB="79" PREEMPT_GRACE="" STAGES_OPT="" INPUT=""
 TRAIN_DATA="" TRAIN_RESUME="" ACC_CONFIG="" EVAL_MODEL="" EVAL_DATA=() DATASETS=""
-DEPEND_ON="" ALLOW_DUP=0 MONITOR_TIMEOUT=300 NO_MONITOR=0 MIN_FREE_GB=50 DRY_RUN=0 EXTRA=()
+DEPEND_ON="" ALLOW_DUP=0 REFRESH_CODE=0 MONITOR_TIMEOUT=300 NO_MONITOR=0 MIN_FREE_GB=50 DRY_RUN=0 EXTRA=()
 RUN_DIR=""
 
 need() { [[ $# -ge 2 && -n "$2" && "$2" != --* ]] || die "$1 requires a value"; }
@@ -159,6 +162,7 @@ while [[ $# -gt 0 ]]; do
     --datasets) need "$@"; DATASETS="$2"; shift 2 ;;
     --depend-on) need "$@"; DEPEND_ON="$2"; shift 2 ;;
     --allow-duplicate) ALLOW_DUP=1; shift ;;
+    --refresh-code) REFRESH_CODE=1; shift ;;
     --monitor-timeout) need "$@"; MONITOR_TIMEOUT="$2"; shift 2 ;;
     --no-monitor) NO_MONITOR=1; shift ;;
     --min-free-gb) need "$@"; MIN_FREE_GB="$2"; shift 2 ;;
@@ -173,6 +177,7 @@ done
 [[ -n "$ACCOUNT" ]] || die "--account is required"
 [[ "$ACCOUNT" =~ ^[A-Za-z0-9_.-]+$ ]] || die "--account has unexpected characters"
 [[ -z "$RUN_BASE" || -z "$RESUME" ]] || die "--run-dir and --resume are mutually exclusive"
+[[ "$REFRESH_CODE" -eq 0 || -n "$RESUME" ]] || die "--refresh-code needs --resume RUN_DIR"
 [[ -z "$RESUME" || "$CONFIG_GIVEN" -eq 0 ]] || die "--config only applies to fresh runs (a resumed run keeps its config.yaml)"
 [[ "$GPUS" =~ ^[A-Za-z0-9_]+:[1-8]$ ]] || die "--gpus must look like h100:1 .. h100:8"
 [[ -z "$TRAIN_GPUS" || "$TRAIN_GPUS" =~ ^[A-Za-z0-9_]+:[1-8]$ ]] || die "--train-gpus must look like h100:2"
@@ -384,6 +389,35 @@ if [[ -n "$RESUME" ]]; then
   [[ -f "$RUN_DIR/manifest.json" ]] || die "--resume $RUN_DIR has no manifest.json"
   [[ -f "$RUN_DIR/config.yaml" ]] || die "--resume $RUN_DIR has no config.yaml"
   [[ -f "$RUN_DIR/code/uv.lock" && -d "$RUN_DIR/code/src/vsft" ]] || die "--resume $RUN_DIR has no code snapshot"
+  if [[ "$REFRESH_CODE" -eq 1 ]]; then
+    # Queued and running jobs read src/ and slurm/lib from the snapshot at run time, so it
+    # may only be swapped while nothing of this run is active.
+    for f in "$RUN_DIR"/status/*.state; do
+      [[ -f "$f" ]] || continue
+      jid="$(python3 "$RECEIPT_PY" get "$f" job_id)"
+      [[ -n "$jid" && "$jid" != "null" && "$jid" =~ ^[0-9]+$ ]] || continue
+      if [[ "$DRY_RUN" -eq 0 ]]; then
+        # Unknown is not safe: only swap when the scheduler confirms the job is not active.
+        st="$(job_state "$jid")" \
+          || die "--refresh-code: cannot verify job $jid ($(basename "${f%.state}")) with the scheduler; not swapping code"
+        if [[ "${st%%|*}" =~ $ACTIVE_RE ]]; then
+          die "--refresh-code: job $jid ($(basename "${f%.state}")) of this run is ${st%%|*}; wait or scancel it first"
+        fi
+      fi
+    done
+    if [[ "$DRY_RUN" -eq 1 ]]; then
+      log "dry run: would replace $RUN_DIR/code with a snapshot of $PROJECT_DIR"
+    else
+      prev="$RUN_DIR/code.prev-$(date -u +%Y%m%dT%H%M%SZ)"
+      chmod -R u+w "$RUN_DIR/code" 2>/dev/null || true
+      mv "$RUN_DIR/code" "$prev" || die "could not move the old snapshot aside"
+      [[ -n "$ACC_CONFIG" || ! -f "$prev/accelerate.yaml" ]] || ACC_CONFIG="$prev/accelerate.yaml"
+      snapshot_code "$RUN_DIR"
+      python3 "$RECEIPT_PY" append "$RUN_DIR/manifest.json" code_refreshes \
+        "$(date -u +%Y%m%dT%H%M%SZ):$(git -C "$PROJECT_DIR" rev-parse HEAD 2>/dev/null || echo unknown):previous=$prev"
+      log "refreshed code snapshot from $PROJECT_DIR (old one kept at $prev)"
+    fi
+  fi
 else
   CONFIG="$(abspath "${CONFIG:-configs/h100/math_qwen35.yaml}")"
   [[ -f "$CONFIG" ]] || die "config not found: $CONFIG"

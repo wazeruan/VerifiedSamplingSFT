@@ -2,28 +2,65 @@
 
 from __future__ import annotations
 
+import dataclasses
+import os
+
 from vsft.backends.base import Backend, Generation
 
 
-def _is_multimodal(model_cfg) -> bool:
+def _hf_config(model_cfg):
     try:
         from transformers import AutoConfig
 
-        cfg = AutoConfig.from_pretrained(
+        return AutoConfig.from_pretrained(
             model_cfg.name_or_path, trust_remote_code=model_cfg.trust_remote_code
         )
-    except Exception:  # noqa: BLE001 - unknown config: assume text-only
+    except Exception:  # noqa: BLE001 - unknown config: callers assume the plain case
+        return None
+
+
+def _is_multimodal(model_cfg, cfg=None) -> bool:
+    cfg = cfg if cfg is not None else _hf_config(model_cfg)
+    if cfg is None:
         return False
     archs = getattr(cfg, "architectures", None) or []
     return any("ConditionalGeneration" in a for a in archs) or hasattr(cfg, "vision_config")
 
 
+def _has_linear_attention(cfg) -> bool:
+    """True for hybrid Gated-DeltaNet models such as Qwen3.5."""
+    if cfg is None:
+        return False
+    text = getattr(cfg, "text_config", None) or cfg
+    return "linear_attention" in (getattr(text, "layer_types", None) or [])
+
+
+def _engine_arg_supported(name: str) -> bool:
+    try:
+        from vllm.engine.arg_utils import EngineArgs
+
+        return name in {f.name for f in dataclasses.fields(EngineArgs)}
+    except Exception:  # noqa: BLE001
+        return False
+
+
 class VLLMBackend(Backend):
     def __init__(self, model_cfg, backend_cfg):
+        if not backend_cfg.jit_kernels:
+            # No nvcc on compute nodes: keep vLLM off kernels FlashInfer JIT-compiles.
+            # Set before vllm is imported; the engine-core subprocess inherits it.
+            os.environ["VLLM_USE_FLASHINFER_SAMPLER"] = "0"
         from vllm import LLM
 
+        hf_cfg = _hf_config(model_cfg)
         kwargs = {}
-        if _is_multimodal(model_cfg):
+        if (
+            not backend_cfg.jit_kernels
+            and _has_linear_attention(hf_cfg)
+            and _engine_arg_supported("gdn_prefill_backend")
+        ):
+            kwargs["gdn_prefill_backend"] = "triton"  # FlashInfer GDN prefill needs nvcc
+        if _is_multimodal(model_cfg, hf_cfg):
             # Text-only use of a multimodal checkpoint (e.g. Qwen3.5): no image/video inputs,
             # so vLLM does not profile or reserve memory for the vision encoder.
             kwargs["limit_mm_per_prompt"] = {"image": 0, "video": 0}

@@ -34,6 +34,10 @@ class BackendConfig:
     # max_num_batched_tokens x vocab fp32 logits per step, outside the profiled budget.
     max_num_batched_tokens: int = 4096  # vLLM only
     max_num_seqs: int = 256  # vLLM only
+    # Allow vLLM kernels that FlashInfer JIT-compiles with nvcc on first use (top-k/top-p
+    # sampler, Gated-DeltaNet prefill). Off by default: cluster compute nodes usually have no
+    # CUDA toolkit, so vLLM's built-in sampler and the Triton GDN prefill are used instead.
+    jit_kernels: bool = False  # vLLM only
     seed: int = 0
 
 

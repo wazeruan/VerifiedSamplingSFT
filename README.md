@@ -242,6 +242,16 @@ If compute nodes do have internet, a single command runs everything, including t
 slurm/submit.sh pipeline --account ACCOUNT --run-dir /scratch/$USER/vsft/math-qwen35 --cache-root /scratch/$USER/vsft-cache --min-gpu-mem-gb 79
 ```
 
+### Picking up a code fix in an existing run
+
+Each run executes its own frozen copy of the code (`RUN_DIR/code`), so a fix pushed later doesn't reach it. To keep the run's data and outputs, update your checkout (`git pull`), then refresh the snapshot as part of the next submission:
+
+```bash
+slurm/submit.sh boost --account ACCOUNT --resume RUN_DIR --refresh-code -- --limit 2
+```
+
+This is refused while any job of the run is queued or running. The old snapshot is kept as `RUN_DIR/code.prev-<UTC>`, and the refresh is recorded in `manifest.json` (`code_refreshes`). If the fix changed `uv.lock`, the run also needs a new `setup`.
+
 ### Other commands
 
 Check the allocation and environment only:
@@ -291,13 +301,14 @@ slurm/remote.sh status --host mycluster --remote-dir '~/vsft' /scratch/USER/vsft
 ### CUDA H100 specifics
 
 - **Preflight**, inside the allocation and before anything runs, requires:
-  - an H100 (the name matches `--gpu-type H100`), compute capability 8.0 (`--gpu-capability 8.0`);
+  - an H100 (the name matches `--gpu-type H100`), compute capability 9.0 (`--gpu-capability 9.0`);
   - a CUDA build of torch that ships `sm_90` kernels;
-  - at least 39 GB of GPU memory, or `--min-gpu-mem-gb 79` for 80 GB cards;
+  - at least 79 GB of GPU memory (`--min-gpu-mem-gb`, default 79: H100 80 GB);
   - working bf16 and TF32 matmuls on every allocated GPU.
 - **Recorded versions.** The NVIDIA driver, torch and CUDA versions are written to `status/<stage>.PREFLIGHT_OK`.
 - **Precision.** Models run in bf16 (`model.dtype: bfloat16`, `mixed_precision: bf16`). TF32 is enabled for the remaining fp32 matmuls (Ampere and newer). Attention uses PyTorch SDPA, which picks the flash/memory-efficient kernels on H100.
-- **CUDA driver.** The default PyPI torch wheels are built for CUDA 12. The node's NVIDIA driver must support that; preflight fails clearly if it doesn't.
+- **CUDA driver.** The locked torch wheel is built for CUDA 13.0. The node's NVIDIA driver must support it; preflight fails clearly if it doesn't. Nibi's driver 580 does.
+- **No CUDA toolkit needed.** Compute nodes usually have no `nvcc`. By default (`backend.jit_kernels: false`), vLLM uses its built-in sampler instead of FlashInfer's, and Triton for the Qwen3.5 Gated-DeltaNet prefill. Both of FlashInfer's versions JIT-compile CUDA code with `nvcc` on first use, which crashes engine start-up on such nodes. Set `jit_kernels: true` only where a CUDA toolkit is on `PATH`. FlashInfer's cache goes under `--cache-root`, not `~/.cache`.
 
 ### Resources and configs
 

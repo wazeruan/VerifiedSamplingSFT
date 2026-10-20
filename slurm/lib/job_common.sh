@@ -139,6 +139,8 @@ vsft_init() {
   export HF_HOME="${VSFT_HF_HOME:-$cache/huggingface}"
   export UV_CACHE_DIR="$cache/uv" VLLM_CACHE_ROOT="$cache/vllm" TRITON_CACHE_DIR="$cache/triton"
   export XDG_CACHE_HOME="$cache/xdg" TORCHINDUCTOR_CACHE_DIR="$cache/inductor"
+  # FlashInfer ignores XDG and defaults to ~/.cache/flashinfer (home quota).
+  export FLASHINFER_WORKSPACE_BASE="$cache/flashinfer"
   export UV_LINK_MODE=copy UV_PROJECT_ENVIRONMENT="$VSFT_VENV"
   export PYTHONUNBUFFERED=1 TOKENIZERS_PARALLELISM=false
   # Run the per-run code snapshot, not whatever the shared venv was last built from.
@@ -146,7 +148,8 @@ vsft_init() {
   if [[ "${VSFT_OFFLINE:-1}" == "1" ]]; then
     export HF_HUB_OFFLINE=1 HF_DATASETS_OFFLINE=1 TRANSFORMERS_OFFLINE=1
   fi
-  mkdir -p "$HF_HOME" "$UV_CACHE_DIR" "$VLLM_CACHE_ROOT" "$TRITON_CACHE_DIR" "$XDG_CACHE_HOME"
+  mkdir -p "$HF_HOME" "$UV_CACHE_DIR" "$VLLM_CACHE_ROOT" "$TRITON_CACHE_DIR" "$XDG_CACHE_HOME" \
+    "$FLASHINFER_WORKSPACE_BASE"
 
   # Extra vsft args: NUL-separated (keeps empty args and newlines intact).
   VSFT_STAGE_ARGS=()
