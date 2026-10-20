@@ -105,6 +105,12 @@ def _sha256(path: Path) -> str:
     return h.hexdigest()
 
 
+# Files a run needs from a model repo. The download and the cache check must use the same
+# patterns: huggingface_hub treats a snapshot as incomplete if files outside the patterns
+# are missing, which made a finished download look broken.
+MODEL_PATTERNS = ["*.json", "*.safetensors", "*.model", "*.txt", "*.jinja", "*.tiktoken"]
+
+
 def model_available(name: str) -> str | None:
     """None if the model is a local dir or fully in the HF cache, else a problem string."""
     if Path(name).is_dir():
@@ -112,7 +118,7 @@ def model_available(name: str) -> str | None:
     try:
         from huggingface_hub import snapshot_download
 
-        path = snapshot_download(name, local_files_only=True)
+        path = snapshot_download(name, local_files_only=True, allow_patterns=MODEL_PATTERNS)
     except Exception as e:  # noqa: BLE001 - any cache miss is reported, not raised
         return f"model {name!r} not in the HF cache ({type(e).__name__}); run the prepare stage"
     if not list(Path(path).glob("*.safetensors")):
@@ -300,7 +306,7 @@ def cmd_download_model(a) -> int:
             continue
         path = snapshot_download(
             name,
-            allow_patterns=["*.json", "*.safetensors", "*.model", "*.txt", "*.jinja", "*.tiktoken"],
+            allow_patterns=MODEL_PATTERNS,
         )
         print(f"downloaded {name} -> {path}")
     return 0
