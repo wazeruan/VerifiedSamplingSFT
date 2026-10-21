@@ -25,6 +25,11 @@ STAGE
   train_paper GPU  SFT on the authors'-method samples (same config)  -> RUN_DIR/sft-paper
   eval_paper GPU   accuracy of the authors'-method model              -> RUN_DIR/eval/paper-JOBID
   gpucheck   GPU   allocation/accelerator/environment check only
+  paper            the authors' method alone, from scratch, in its own run directory
+                   (runs/paper-<config>): setup, prepare, paper_sample, train_paper,
+                   eval_paper, chained afterok. Same dataset, test sets and training
+                   settings as the other arms. Example:
+                     slurm/submit.sh paper --account ACCOUNT --min-gpu-mem-gb 79
   pipeline         submit --stages (default setup,prepare,boost,train,eval) chained afterok
                    (no internet on compute nodes? run slurm/fetch_online.sh where your site
                    allows downloads, then: pipeline --stages boost,train,eval)
@@ -116,7 +121,7 @@ die() {
 [[ $# -ge 1 ]] || { usage >&2; exit 2; }
 case "$1" in -h|--help) usage; exit 0 ;; esac
 STAGE="$1"; shift
-case "$STAGE" in setup|prepare|boost|train|eval|train_sft|eval_sft|eval_base|paper_sample|train_paper|eval_paper|gpucheck|pipeline|compare) ;; *) die "unknown stage '$STAGE' (see --help)" ;; esac
+case "$STAGE" in setup|prepare|boost|train|eval|train_sft|eval_sft|eval_base|paper_sample|train_paper|eval_paper|gpucheck|pipeline|paper|compare) ;; *) die "unknown stage '$STAGE' (see --help)" ;; esac
 
 ACCOUNT="" RUN_BASE="" RESUME="" CONFIG="" CONFIG_GIVEN=0 PROJECT_DIR="$DEFAULT_PROJECT_DIR"
 GPUS="h100:1" TRAIN_GPUS="" CPUS="8" MEM="120G" TIME="" PARTITION="" QOS="" RESERVATION="" CONSTRAINT=""
@@ -185,7 +190,7 @@ done
 [[ -z "$RESUME" || "$CONFIG_GIVEN" -eq 0 ]] || die "--config only applies to fresh runs (a resumed run keeps its config.yaml)"
 [[ "$GPUS" =~ ^[A-Za-z0-9_]+:[1-8]$ ]] || die "--gpus must look like h100:1 .. h100:8"
 [[ -z "$TRAIN_GPUS" || "$TRAIN_GPUS" =~ ^[A-Za-z0-9_]+:[1-8]$ ]] || die "--train-gpus must look like h100:2"
-if [[ ( "$STAGE" == "pipeline" || "$STAGE" == "compare" ) && "${GPUS##*:}" -gt 1 ]]; then
+if [[ ( "$STAGE" == "pipeline" || "$STAGE" == "paper" || "$STAGE" == "compare" ) && "${GPUS##*:}" -gt 1 ]]; then
   # boost/eval run on one GPU; a multi-GPU --gpus would leave GPUs idle for hours.
   die "--gpus ${GPUS} would apply to every GPU stage; use --train-gpus for multi-GPU training"
 fi
@@ -202,8 +207,8 @@ fi
 [[ -z "$GPU_CAPABILITY" || "$GPU_CAPABILITY" =~ ^[0-9]+\.[0-9]$ ]] || die "--gpu-capability must look like 9.0"
 [[ -z "$DEPEND_ON" || "$DEPEND_ON" =~ ^[0-9]+(:[0-9]+)*$ ]] || die "--depend-on must be JOBID[:JOBID...]"
 [[ -z "$TRAIN_RESUME" || "$STAGE" == "train" || "$STAGE" == "train_sft" || "$STAGE" == "train_paper" ]] || die "--train-resume is only valid for the train, train_sft or train_paper stage"
-[[ -z "$STAGES_OPT" || "$STAGE" == "pipeline" || "$STAGE" == "compare" ]] || die "--stages is only valid with pipeline or compare"
-[[ ${#EXTRA[@]} -eq 0 || ( "$STAGE" != "pipeline" && "$STAGE" != "compare" ) ]] || die "extra vsft args need a single stage"
+[[ -z "$STAGES_OPT" || "$STAGE" == "pipeline" || "$STAGE" == "paper" || "$STAGE" == "compare" ]] || die "--stages is only valid with pipeline, paper or compare"
+[[ ${#EXTRA[@]} -eq 0 || ( "$STAGE" != "pipeline" && "$STAGE" != "paper" && "$STAGE" != "compare" ) ]] || die "extra vsft args need a single stage"
 if [[ "$STAGE" == "compare" ]]; then
   # One model/data override would apply to several branches and break the comparison.
   [[ -z "$EVAL_MODEL" && -z "$TRAIN_DATA" && -z "$TRAIN_RESUME" ]] \
@@ -242,6 +247,15 @@ if [[ "$STAGE" == "pipeline" ]]; then
   [[ ${#STAGES[@]} -gt 0 ]] || die "--stages is empty"
   for s in "${STAGES[@]}"; do
     case "$s" in setup|prepare|boost|train|eval) ;; *) die "invalid pipeline stage '$s'" ;; esac
+  done
+elif [[ "$STAGE" == "paper" ]]; then
+  # The authors' method on its own, from scratch: setup, prepare, paper sampling, SFT, eval.
+  IFS=',' read -r -a STAGES <<< "${STAGES_OPT:-setup,prepare,paper_sample,train_paper,eval_paper}"
+  [[ ${#STAGES[@]} -gt 0 ]] || die "--stages is empty"
+  for s in "${STAGES[@]}"; do
+    case "$s" in setup|prepare|paper_sample|train_paper|eval_paper) ;; *)
+      die "invalid paper stage '$s' (paper runs setup, prepare, paper_sample, train_paper, eval_paper)" ;;
+    esac
   done
 elif [[ "$STAGE" == "compare" ]]; then
   IFS=',' read -r -a STAGES <<< "${STAGES_OPT:-setup,prepare,boost,train,eval,train_sft,eval_sft,eval_base,paper_sample,train_paper,eval_paper}"
@@ -426,7 +440,11 @@ if [[ -n "$RESUME" ]]; then
 else
   CONFIG="$(abspath "${CONFIG:-configs/h100/math_qwen35.yaml}")"
   [[ -f "$CONFIG" ]] || die "config not found: $CONFIG"
-  base="$(abspath "${RUN_BASE:-runs/$(basename "${CONFIG%.*}")}")"
+  if [[ "$STAGE" == "paper" ]]; then
+    base="$(abspath "${RUN_BASE:-runs/paper-$(basename "${CONFIG%.*}")}")"   # its own run dir
+  else
+    base="$(abspath "${RUN_BASE:-runs/$(basename "${CONFIG%.*}")}")"
+  fi
   if [[ "$DRY_RUN" -eq 1 ]]; then
     RUN_DIR="$base"
   else
