@@ -45,13 +45,13 @@ _kill_child() {  # _kill_child SIGNAL : signal the workload's whole process grou
 }
 
 _signal_lead() {  # must match each stage's #SBATCH --signal=B:USR1@<lead>
-  case "$VSFT_STAGE" in boost|train|train_sft) echo 600 ;; eval|eval_sft|eval_base) echo 300 ;; setup|prepare) echo 120 ;; *) echo 60 ;; esac
+  case "$VSFT_STAGE" in boost|paper_sample|train|train_sft|train_paper) echo 600 ;; eval|eval_sft|eval_base|eval_paper) echo 300 ;; setup|prepare) echo 120 ;; *) echo 60 ;; esac
 }
 
 _default_grace() {  # time to let the workload checkpoint; always < lead - 60 s
   local lead want cap
   lead="$(_signal_lead)"; cap=$((lead - 60)); [[ "$cap" -ge 10 ]] || cap=10
-  case "$VSFT_STAGE" in boost|train|train_sft) want=500 ;; eval|eval_sft|eval_base) want=240 ;; *) want=60 ;; esac
+  case "$VSFT_STAGE" in boost|paper_sample|train|train_sft|train_paper) want=500 ;; eval|eval_sft|eval_base|eval_paper) want=240 ;; *) want=60 ;; esac
   [[ -n "${VSFT_PREEMPT_GRACE:-}" ]] && want="$VSFT_PREEMPT_GRACE"
   if [[ "$want" -gt "$cap" ]]; then want="$cap"; fi
   echo "$want"
@@ -59,7 +59,7 @@ _default_grace() {  # time to let the workload checkpoint; always < lead - 60 s
 
 _stopped_record() {  # path of the workload's own "stopped resumably" record for this job
   case "$VSFT_STAGE" in
-    train|train_sft) [[ -n "${VSFT_TRAIN_DIR:-}" ]] && echo "$VSFT_TRAIN_DIR/STOPPED.json" ;;
+    train|train_sft|train_paper) [[ -n "${VSFT_TRAIN_DIR:-}" ]] && echo "$VSFT_TRAIN_DIR/STOPPED.json" ;;
     *) echo "$VSFT_RUN_DIR/status/$VSFT_STAGE.${SLURM_JOB_ID:-nojob}.STOPPED.json" ;;
   esac
 }
@@ -87,7 +87,7 @@ _on_signal() {
     fi
   fi
   local hint=""
-  if [[ "$reason" == "stopped_resumable" && ( "$VSFT_STAGE" == "train" || "$VSFT_STAGE" == "train_sft" ) ]]; then
+  if [[ "$reason" == "stopped_resumable" && ( "$VSFT_STAGE" == "train" || "$VSFT_STAGE" == "train_sft" || "$VSFT_STAGE" == "train_paper" ) ]]; then
     hint="$(python3 "$RECEIPT_PY" get "$VSFT_TRAIN_DIR/STOPPED.json" state_dir)"
     _log "resumable state: $hint (resubmit: slurm/submit.sh $VSFT_STAGE --resume $VSFT_RUN_DIR --train-resume $hint ...)"
   elif [[ "$reason" == "stopped_resumable" ]]; then

@@ -22,7 +22,7 @@ if b:
           f"mean_rounds={b.get('mean_rounds')} status={b.get('status')} "
           f"logprob_gain_vs_expert={b.get('mean_logprob_gain_vs_expert')}")
 geos = {}
-for stage, what in (("train", "Sampling SFT"), ("train_sft", "plain SFT baseline")):
+for stage, what in (("train", "Sampling SFT"), ("train_sft", "plain SFT baseline"), ("train_paper", "authors' method")):
     st = state(stage)
     dfile = os.path.join(run, "status", f"{stage}.dir")
     if st == "-" and not os.path.exists(dfile):
@@ -45,10 +45,10 @@ for stage, what in (("train", "Sampling SFT"), ("train_sft", "plain SFT baseline
                 except ValueError:
                     pass
             if lines: print(f"  last loss={lines[-1].get('loss')} at step {lines[-1].get('step')}")
-if len(geos) == 2 and len(set(geos.values())) > 1:
-    print(f"\nWARNING: the two SFT arms trained on different example counts / step counts: {geos}")
+if len(geos) > 1 and len(set(geos.values())) > 1:
+    print(f"\nWARNING: the training arms used different example counts / step counts: {geos}")
 print()
-for stage in ("eval_base", "eval_sft", "eval"):
+for stage in ("eval_base", "eval_sft", "eval", "eval_paper"):
     if state(stage) != "-":
         print(f"[{stage}] state={state(stage)}")
 PY

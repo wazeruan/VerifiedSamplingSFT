@@ -3,6 +3,7 @@
 #   eval       Sampling SFT model  (status/train.dir)      label "sampling"
 #   eval_sft   plain SFT baseline  (status/train_sft.dir)  label "sft"
 #   eval_base  untrained base model (config model)          label "base"
+#   eval_paper the authors' method model (status/train_paper.dir)  label "paper"
 # VSFT_EVAL_MODEL overrides the model for any of them.
 #SBATCH --job-name=vsft-eval
 #SBATCH --gpus-per-node=h100:1
@@ -18,6 +19,7 @@ case "$VSFT_STAGE" in
   eval)      LABEL="sampling"; TRAIN_STAGE="train" ;;
   eval_sft)  LABEL="sft";      TRAIN_STAGE="train_sft" ;;
   eval_base) LABEL="base";     TRAIN_STAGE="" ;;
+  eval_paper) LABEL="paper";   TRAIN_STAGE="train_paper" ;;
   *) _log "eval.sbatch does not handle stage $VSFT_STAGE"; exit 64 ;;
 esac
 MODEL="${VSFT_EVAL_MODEL:-}"

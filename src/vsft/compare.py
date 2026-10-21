@@ -22,11 +22,12 @@ import re
 import sys
 from pathlib import Path
 
-ORDER = ["base", "sft", "sampling"]
+ORDER = ["base", "sft", "sampling", "paper"]
 NAMES = {
     "base": "Initial model",
     "sft": "Plain SFT (expert traces)",
-    "sampling": "Sampling SFT",
+    "sampling": "Sampling SFT (verifier-guided)",
+    "paper": "Authors' method (block MCMC SFT)",
 }
 
 

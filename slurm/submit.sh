@@ -20,6 +20,10 @@ STAGE
   train_sft  GPU   plain SFT baseline: raw expert traces of the same boosted rows -> RUN_DIR/sft-baseline
   eval_sft   GPU   accuracy of the plain SFT model      -> RUN_DIR/eval/sft-JOBID
   eval_base  GPU   accuracy of the initial (untrained) model -> RUN_DIR/eval/base-JOBID
+  paper_sample GPU the authors' method: block-wise MCMC sampling (paper Algorithm 1)
+                   over the same training rows -> RUN_DIR/paper_sampled.jsonl
+  train_paper GPU  SFT on the authors'-method samples (same config)  -> RUN_DIR/sft-paper
+  eval_paper GPU   accuracy of the authors'-method model              -> RUN_DIR/eval/paper-JOBID
   gpucheck   GPU   allocation/accelerator/environment check only
   pipeline         submit --stages (default setup,prepare,boost,train,eval) chained afterok
                    (no internet on compute nodes? run slurm/fetch_online.sh where your site
@@ -112,7 +116,7 @@ die() {
 [[ $# -ge 1 ]] || { usage >&2; exit 2; }
 case "$1" in -h|--help) usage; exit 0 ;; esac
 STAGE="$1"; shift
-case "$STAGE" in setup|prepare|boost|train|eval|train_sft|eval_sft|eval_base|gpucheck|pipeline|compare) ;; *) die "unknown stage '$STAGE' (see --help)" ;; esac
+case "$STAGE" in setup|prepare|boost|train|eval|train_sft|eval_sft|eval_base|paper_sample|train_paper|eval_paper|gpucheck|pipeline|compare) ;; *) die "unknown stage '$STAGE' (see --help)" ;; esac
 
 ACCOUNT="" RUN_BASE="" RESUME="" CONFIG="" CONFIG_GIVEN=0 PROJECT_DIR="$DEFAULT_PROJECT_DIR"
 GPUS="h100:1" TRAIN_GPUS="" CPUS="8" MEM="120G" TIME="" PARTITION="" QOS="" RESERVATION="" CONSTRAINT=""
@@ -197,7 +201,7 @@ fi
 [[ "$MIN_GPU_MEM_GB" =~ ^[0-9]+([.][0-9]+)?$ ]] || die "--min-gpu-mem-gb must be a number"
 [[ -z "$GPU_CAPABILITY" || "$GPU_CAPABILITY" =~ ^[0-9]+\.[0-9]$ ]] || die "--gpu-capability must look like 9.0"
 [[ -z "$DEPEND_ON" || "$DEPEND_ON" =~ ^[0-9]+(:[0-9]+)*$ ]] || die "--depend-on must be JOBID[:JOBID...]"
-[[ -z "$TRAIN_RESUME" || "$STAGE" == "train" || "$STAGE" == "train_sft" ]] || die "--train-resume is only valid for the train or train_sft stage"
+[[ -z "$TRAIN_RESUME" || "$STAGE" == "train" || "$STAGE" == "train_sft" || "$STAGE" == "train_paper" ]] || die "--train-resume is only valid for the train, train_sft or train_paper stage"
 [[ -z "$STAGES_OPT" || "$STAGE" == "pipeline" || "$STAGE" == "compare" ]] || die "--stages is only valid with pipeline or compare"
 [[ ${#EXTRA[@]} -eq 0 || ( "$STAGE" != "pipeline" && "$STAGE" != "compare" ) ]] || die "extra vsft args need a single stage"
 if [[ "$STAGE" == "compare" ]]; then
@@ -222,14 +226,15 @@ abspath() { python3 -c 'import os,sys; print(os.path.abspath(os.path.expanduser(
 
 # Job script per stage: the comparison variants reuse the train/eval scripts.
 script_of() {
-  case "$1" in train_sft) echo train ;; eval_sft|eval_base) echo eval ;; *) echo "$1" ;; esac
+  case "$1" in train_sft|train_paper) echo train ;; eval_sft|eval_base|eval_paper) echo eval ;; *) echo "$1" ;; esac
 }
 # Predecessor of each stage in the compare graph ("" = root).
 compare_pred_of() {
   case "$1" in
     setup) echo "" ;; prepare) echo setup ;; boost) echo prepare ;; train) echo boost ;;
     eval) echo train ;; train_sft) echo boost ;; eval_sft) echo train_sft ;;
-    eval_base) echo prepare ;; *) echo "" ;;
+    eval_base) echo prepare ;; paper_sample) echo prepare ;; train_paper) echo paper_sample ;;
+    eval_paper) echo train_paper ;; *) echo "" ;;
   esac
 }
 if [[ "$STAGE" == "pipeline" ]]; then
@@ -239,10 +244,10 @@ if [[ "$STAGE" == "pipeline" ]]; then
     case "$s" in setup|prepare|boost|train|eval) ;; *) die "invalid pipeline stage '$s'" ;; esac
   done
 elif [[ "$STAGE" == "compare" ]]; then
-  IFS=',' read -r -a STAGES <<< "${STAGES_OPT:-setup,prepare,boost,train,eval,train_sft,eval_sft,eval_base}"
+  IFS=',' read -r -a STAGES <<< "${STAGES_OPT:-setup,prepare,boost,train,eval,train_sft,eval_sft,eval_base,paper_sample,train_paper,eval_paper}"
   [[ ${#STAGES[@]} -gt 0 ]] || die "--stages is empty"
   for s in "${STAGES[@]}"; do
-    case "$s" in setup|prepare|boost|train|eval|train_sft|eval_sft|eval_base) ;; *) die "invalid compare stage '$s'" ;; esac
+    case "$s" in setup|prepare|boost|train|eval|train_sft|eval_sft|eval_base|paper_sample|train_paper|eval_paper) ;; *) die "invalid compare stage '$s'" ;; esac
   done
 else
   STAGES=("$STAGE")
@@ -473,10 +478,20 @@ if [[ "$DRY_RUN" -eq 0 ]]; then
     td="$(cat "$RUN_DIR/status/train.dir" 2>/dev/null || true)"
     [[ -n "$td" && -f "$td/SUCCEEDED.json" ]] || die "no successfully trained model in run (pass --eval-model or include train)"
   fi
+  if has_stage paper_sample && needs_existing prepare; then
+    f="$RUN_DIR/data/math_l345_train.jsonl"; [[ -s "$f" ]] || die "paper sampler input missing: $f (run prepare)"
+  fi
+  if has_stage train_paper && needs_existing paper_sample; then
+    f="${TRAIN_DATA:-$RUN_DIR/paper_sampled.jsonl}"; [[ -s "$f" ]] || die "train_paper data missing: $f (run paper_sample)"
+  fi
+  if has_stage eval_paper && needs_existing train_paper && [[ -z "$EVAL_MODEL" ]]; then
+    td="$(cat "$RUN_DIR/status/train_paper.dir" 2>/dev/null || true)"
+    [[ -n "$td" && -f "$td/SUCCEEDED.json" ]] || die "no successfully trained paper-method model in run (include train_paper)"
+  fi
   if has_stage train_sft && needs_existing boost; then
     f="${TRAIN_DATA:-$RUN_DIR/boosted.jsonl}"; [[ -s "$f" ]] || die "plain-SFT data missing: $f (it trains on the boosted rows' expert traces; run boost or pass --train-data)"
   fi
-  for s in eval eval_sft eval_base; do
+  for s in eval eval_sft eval_base eval_paper; do
     # Test sets must exist now unless prepare is part of this submission.
     if has_stage "$s" && ! has_stage prepare && [[ -z "$DEP" && ${#EVAL_DATA[@]} -eq 0 ]]; then
       for f in math_l345_test math500_test gsm8k_test; do
@@ -552,7 +567,7 @@ submit_stage() {  # submit_stage STAGE DEPENDENCY_IDS
             --output "$log_out" --error "$log_err" --comment "$token" --export ALL)
   if [[ "$gpu" -eq 1 ]]; then
     local gpus="$GPUS"
-    case "$stage" in train|train_sft) gpus="${TRAIN_GPUS:-$GPUS}" ;; esac
+    case "$stage" in train|train_sft|train_paper) gpus="${TRAIN_GPUS:-$GPUS}" ;; esac
     sb+=(--gpus-per-node "$gpus" --cpus-per-task "$CPUS" --mem "$MEM")
     [[ -n "$PARTITION" ]] && sb+=(--partition "$PARTITION")
     [[ -n "$TIME" ]] && sb+=(--time "$TIME")

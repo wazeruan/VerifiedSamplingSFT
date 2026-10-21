@@ -42,6 +42,20 @@ class BackendConfig:
 
 
 @dataclass
+class PaperSamplerConfig:
+    """Authors' method (block-wise MCMC sampling, arXiv:2610.02140, Algorithm 1)."""
+
+    block_size: int = 32  # B: tokens resampled per block (paper: 32)
+    n_mcmc: int = 10  # N_MCMC resampling steps per block (paper: 10)
+    max_new_tokens: int = 1856  # T: maximum response length (paper: 1856)
+    temperature: float = 1.0  # proposal sampling temperature
+    top_p: float = 1.0
+    proposal_prompt: str = "generic"  # key in prompts.PROPOSAL_PROMPTS
+    seed: int = 0  # cut-point sampling
+    examples_per_batch: int = 64  # examples advanced together (one batched call per step)
+
+
+@dataclass
 class BoostConfig:
     num_candidates: int = 4  # K candidates regenerated per round
     max_rounds: int = 6  # verifier/regenerate iterations per example
@@ -138,6 +152,7 @@ class Config:
     model: ModelConfig = field(default_factory=ModelConfig)
     backend: BackendConfig = field(default_factory=BackendConfig)
     boost: BoostConfig = field(default_factory=BoostConfig)
+    paper: PaperSamplerConfig = field(default_factory=PaperSamplerConfig)
     verifier: VerifierConfig = field(default_factory=VerifierConfig)
     train: TrainConfig = field(default_factory=TrainConfig)
     eval: EvalConfig = field(default_factory=EvalConfig)
@@ -217,7 +232,17 @@ def load_config(path: str | Path | None = None, overrides: list[str] | None = No
     return cfg
 
 
+def validate_paper(pc: PaperSamplerConfig) -> None:
+    if pc.block_size < 1 or pc.max_new_tokens < pc.block_size:
+        raise ValueError("paper.block_size >= 1 and paper.max_new_tokens >= block_size required")
+    if pc.n_mcmc < 0 or pc.examples_per_batch < 1:
+        raise ValueError("paper.n_mcmc >= 0 and paper.examples_per_batch >= 1 required")
+    if pc.temperature <= 0 or not (0 < pc.top_p <= 1):
+        raise ValueError("paper sampling needs temperature > 0 and top_p in (0, 1]")
+
+
 def validate(cfg: Config) -> None:
+    validate_paper(cfg.paper)
     from vsft.prompts import PROPOSAL_PROMPTS
 
     b, v, m, be = cfg.boost, cfg.verifier, cfg.model, cfg.backend

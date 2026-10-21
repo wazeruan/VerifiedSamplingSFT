@@ -3,6 +3,7 @@
 #   train      Sampling SFT: SFT on the boosted traces            -> RUN_DIR/sft[-NNN]
 #   train_sft  plain SFT baseline: SFT on the raw expert traces of the *same* boosted rows
 #              (boosted.jsonl with train.source=expert)            -> RUN_DIR/sft-baseline[-NNN]
+#   train_paper the authors' method: SFT on the paper-sampled responses -> RUN_DIR/sft-paper[-NNN]
 # More than one GPU -> accelerate launch (DDP, or FSDP via --accelerate-config).
 # On the USR1 warning it saves a resumable state and exits 75.
 #SBATCH --job-name=vsft-train
@@ -22,6 +23,8 @@ case "$VSFT_STAGE" in
   # arms see exactly the same questions, example count and LR schedule.
   train_sft) DATA="${VSFT_TRAIN_DATA:-$VSFT_RUN_DIR/boosted.jsonl}"; DIR_BASE="sft-baseline"
              SOURCE_ARGS=(--set train.source=expert) ;;
+  train_paper) DATA="${VSFT_TRAIN_DATA:-$VSFT_RUN_DIR/paper_sampled.jsonl}"; DIR_BASE="sft-paper"
+               SOURCE_ARGS=() ;;
   *) _log "train.sbatch does not handle stage $VSFT_STAGE"; exit 64 ;;
 esac
 MODEL="$("$VSFT_PY" -m vsft.hpc config-get --config "$VSFT_CONFIG" model.name_or_path)"

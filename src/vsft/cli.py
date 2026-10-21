@@ -205,6 +205,56 @@ def cmd_eval(args) -> int:
     return 0
 
 
+def cmd_paper_sample(args) -> int:
+    """The authors' block-wise MCMC sampler (paper Algorithm 1) over the input file."""
+    from vsft.backends.base import build_backend
+    from vsft.boost import Example
+    from vsft.io import append_jsonl, completed_ids, read_jsonl, repair_tail, write_json_atomic
+    from vsft.paper_sampler import PaperSampler
+
+    cfg = load_config(args.config, args.overrides)
+    out = Path(args.output)
+    out.parent.mkdir(parents=True, exist_ok=True)
+    examples = [Example.from_dict(d) for d in read_jsonl(args.input)]
+    if args.limit:
+        examples = examples[: args.limit]
+    ids = [e.id for e in examples]
+    if len(set(ids)) != len(ids):
+        raise SystemExit("input has duplicate ids")
+    repair_tail(out)
+    done = completed_ids(out)
+    todo = [e for e in examples if e.id not in done]
+    logging.info(
+        "paper: %d examples, %d already done, %d to go", len(examples), len(done), len(todo)
+    )
+    if todo:
+        from vsft.hpc import notify_started
+
+        sampler = PaperSampler(build_backend(cfg.model, cfg.backend), cfg.paper)
+        notify_started(todo=len(todo))
+        bs = cfg.paper.examples_per_batch
+        for i in range(0, len(todo), bs):
+            results = sampler.run(todo[i : i + bs])
+            append_jsonl(out, (r.to_dict() for r in results))
+            logging.info("paper: wrote %d/%d", min(i + bs, len(todo)), len(todo))
+    wanted = set(ids)
+    rows = [r for r in read_jsonl(out) if str(r.get("id")) in wanted] if out.exists() else []
+    summary = {
+        "input": str(args.input),
+        "output": str(out),
+        "num_rows": len(rows),
+        "status": dict(Counter(r["status"] for r in rows)),
+        "mean_blocks": sum(r["num_blocks"] for r in rows) / max(1, len(rows)),
+        "mcmc_acceptance": (
+            sum(r["mcmc_accepted"] for r in rows) / max(1, sum(r["mcmc_steps"] for r in rows))
+        ),
+        "config": cfg.to_dict(),
+    }
+    write_json_atomic(out.with_suffix(".summary.json"), summary)
+    logging.info("paper summary: %s", {k: v for k, v in summary.items() if k != "config"})
+    return 0
+
+
 def cmd_compare(args) -> int:
     from vsft.compare import main as compare_main
 
@@ -229,6 +279,15 @@ def build_parser() -> argparse.ArgumentParser:
     b.add_argument("--output", required=True, type=Path, help="output JSONL (resumes if present)")
     b.add_argument("--limit", type=int, default=0, help="only the first N examples (0 = all)")
     b.set_defaults(func=cmd_boost)
+
+    pp = sub.add_parser(
+        "paper-sample", help="the authors' block-wise MCMC sampler (paper Algorithm 1)"
+    )
+    _common(pp)
+    pp.add_argument("--input", required=True, type=Path, help="JSONL with id/question/expert")
+    pp.add_argument("--output", required=True, type=Path, help="output JSONL (resumes if present)")
+    pp.add_argument("--limit", type=int, default=0, help="only the first N examples (0 = all)")
+    pp.set_defaults(func=cmd_paper_sample)
 
     pr = sub.add_parser("prepare", help="download and convert datasets to JSONL")
     pr.add_argument("datasets", nargs="+", help="math | math500 | gsm8k")
