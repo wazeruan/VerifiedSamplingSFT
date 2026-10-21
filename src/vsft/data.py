@@ -49,7 +49,7 @@ def prepare_math(
                 if ex["level"] not in keep:
                     continue
                 ans = extract_boxed(ex["solution"])
-                if ans is None:
+                if ans is None or not str(ans).strip():  # no answer (e.g. an empty \\boxed{})
                     continue
                 rows.append(
                     {

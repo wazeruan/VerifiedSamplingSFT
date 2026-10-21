@@ -22,9 +22,20 @@ def evaluate(
         rows = rows[:limit]
     if not rows:
         raise ValueError(f"no rows in {data_path}")
-    missing = [r.get("id") for r in rows if r.get("answer") is None or str(r["answer"]) == ""]
-    if missing:
-        raise ValueError(f"{len(missing)} rows have no reference answer, e.g. {missing[:3]}")
+
+    # Rows without a reference answer cannot be graded. Skip them, and record the count, so
+    # every method evaluated on this file uses the same rows (the summary's n shows it).
+    def unanswerable(r) -> bool:
+        return r.get("answer") is None or str(r["answer"]).strip() == ""
+
+    skipped = [r.get("id") for r in rows if unanswerable(r)]
+    if skipped:
+        log.warning(
+            "skipping %d rows without a reference answer, e.g. %s", len(skipped), skipped[:3]
+        )
+        rows = [r for r in rows if not unanswerable(r)]
+    if not rows:
+        raise ValueError(f"no gradable rows in {data_path}")
     preds = []
     bs = eval_cfg.batch_size
     for i in range(0, len(rows), bs):

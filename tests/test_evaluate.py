@@ -65,16 +65,22 @@ def test_evaluate_limit_and_errors(tmp_path):
     with pytest.raises(ValueError, match="no rows"):
         evaluate(EvalBackend(ANS), write(tmp_path / "e.jsonl", []), tmp_path / "o", cfg())
     bad = write(tmp_path / "b.jsonl", [{"id": "x", "question": "qa"}])
-    with pytest.raises(ValueError, match="no reference answer"):
+    with pytest.raises(ValueError, match="no gradable rows"):
         evaluate(EvalBackend(ANS), bad, tmp_path / "o", cfg())
 
 
 def test_evaluate_zero_answer(tmp_path):
-    data = write(tmp_path / "z.jsonl", [{"id": "z", "question": "qz", "answer": 0},
-                                        {"id": "y", "question": "qy", "answer": 0}])
+    data = write(
+        tmp_path / "z.jsonl",
+        [{"id": "z", "question": "qz", "answer": 0}, {"id": "y", "question": "qy", "answer": 0}],
+    )
     be = EvalBackend({"qz": ("\\boxed{0}", True), "qy": ("\\boxed{1}", True)})
     m = evaluate(be, data, tmp_path / "o", cfg())
     assert m["accuracy"] == 0.5
-    bad = write(tmp_path / "e.jsonl", [{"id": "e", "question": "qz", "answer": ""}])
-    with pytest.raises(ValueError, match="no reference answer"):
-        evaluate(be, bad, tmp_path / "o", cfg())
+    # Unanswerable rows are skipped (and logged), not graded as wrong.
+    mixed = write(
+        tmp_path / "e.jsonl",
+        [{"id": "e", "question": "qz", "answer": ""}, {"id": "z", "question": "qz", "answer": 0}],
+    )
+    m2 = evaluate(be, mixed, tmp_path / "o2", cfg())
+    assert m2["num_examples"] == 1 and m2["accuracy"] == 1.0
