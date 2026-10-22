@@ -151,6 +151,31 @@ def cmd_train(args) -> int:
     return 0
 
 
+def _has_judge_rows(path) -> bool:
+    """True if the JSONL's first row is open-ended QA (a file has one answer type)."""
+    from vsft.io import read_jsonl
+
+    for row in read_jsonl(path):
+        return row.get("answer_type") == "judge"
+    return False
+
+
+def _build_judge_backend(cfg, student_backend):
+    """The judge shares the student's engine unless eval.judge_model names another model."""
+    if not cfg.eval.judge_model or cfg.eval.judge_model == cfg.model.name_or_path:
+        return student_backend
+    import dataclasses
+
+    judge_model = dataclasses.replace(cfg.model, name_or_path=cfg.eval.judge_model)
+    judge_cfg = dataclasses.replace(
+        cfg.backend, gpu_memory_utilization=cfg.eval.judge_gpu_memory_utilization
+    )
+    logging.info(
+        "judge: %s (model under test: %s)", judge_model.name_or_path, cfg.model.name_or_path
+    )
+    return build_backend(judge_model, judge_cfg)
+
+
 def cmd_eval(args) -> int:
     from vsft.backends.base import build_backend
     from vsft.evaluate import evaluate
@@ -164,6 +189,10 @@ def cmd_eval(args) -> int:
     if args.model:
         cfg.model.name_or_path = str(args.model)
     backend = build_backend(cfg.model, cfg.backend)
+    judge_backend, judge_model = None, None
+    if any(_has_judge_rows(d) for d in args.data):  # open-ended QA: LLM-graded
+        judge_model = cfg.eval.judge_model or cfg.model.name_or_path
+        judge_backend = _build_judge_backend(cfg, backend)
     from vsft.hpc import notify_started
 
     notify_started(model=cfg.model.name_or_path)
@@ -171,7 +200,7 @@ def cmd_eval(args) -> int:
 
     results, datasets = {}, {}
     for data in args.data:
-        m = evaluate(backend, data, args.output_dir, cfg.eval, args.limit)
+        m = evaluate(backend, data, args.output_dir, cfg.eval, args.limit, judge_backend)
         results[Path(data).stem] = m["accuracy"]
         # What exactly was evaluated, so `vsft compare` can refuse apples-to-oranges rows.
         datasets[Path(data).stem] = {
@@ -199,6 +228,7 @@ def cmd_eval(args) -> int:
             "decoding": {
                 "temperature": cfg.eval.temperature,
                 "max_new_tokens": cfg.eval.max_new_tokens,
+                "judge_model": judge_model,
             },
         },
     )
@@ -290,7 +320,7 @@ def build_parser() -> argparse.ArgumentParser:
     pp.set_defaults(func=cmd_paper_sample)
 
     pr = sub.add_parser("prepare", help="download and convert datasets to JSONL")
-    pr.add_argument("datasets", nargs="+", help="math | math500 | gsm8k")
+    pr.add_argument("datasets", nargs="+", help="math | math500 | gsm8k | medical | mmlu")
     pr.add_argument("--out-dir", type=Path, default=Path("data/processed"))
     pr.set_defaults(func=cmd_prepare)
 

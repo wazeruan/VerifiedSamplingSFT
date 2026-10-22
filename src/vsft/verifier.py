@@ -104,7 +104,9 @@ def decide(
     if prompt_too_long:  # the verifier never saw the candidate: never accept, back off
         llm_correct, step1 = None, None
     answer_ok = None
-    if use_answer_check and req.reference_answer is not None:
+    # Open-ended QA ("judge") has no extractable final answer to match, so the verifier's
+    # own check against the expert trace is the only gate.
+    if use_answer_check and req.reference_answer is not None and req.answer_type != "judge":
         answer_ok = answers_match(
             extract_answer(req.response, req.answer_type), req.reference_answer, req.answer_type
         )

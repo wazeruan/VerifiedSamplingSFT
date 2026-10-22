@@ -161,6 +161,26 @@ uv run vsft compare runs/eval
 
 Use `--label sampling` for the Sampling SFT model's eval.
 
+## Other tasks: medical QA like the paper
+
+The datasets a run uses come from the config's `task` section (`prepare`, `train_file`, `eval_files`), so the same pipelines run on other tasks. `configs/h100/medical_qwen35.yaml` reproduces the paper's second task:
+
+| | |
+|---|---|
+| Train | HuatuoGPT-o1 `medical-o1-reasoning-SFT`: the question, with the expert's reasoning and response as the expert trace |
+| Test | 1,000 held-out open-ended questions from `medical-o1-verifiable-problem`, with any question that appears in training removed |
+| Retention | MMLU (1,000 random questions), MATH-500 and GSM8K, to check that the model doesn't forget |
+
+Open-ended answers can't be matched as strings, so an LLM judge grades them (answer type `judge`). The judge sees the question, the short reference answer and the model's response, and says CORRECT or INCORRECT. The paper used GPT-5-mini; here it is `eval.judge_model` (Qwen3.5-9B in the shipped config), served next to the model under test. The judge model is recorded in each eval summary, and `vsft compare` flags rows graded by different judges. For these rows the verifier has no final answer to match, so it works from the expert trace alone.
+
+Run the whole comparison on it the same way:
+
+```bash
+slurm/submit.sh compare --account ACCOUNT --config configs/h100/medical_qwen35.yaml --run-dir /scratch/$USER/vsft/medical --cache-root /scratch/$USER/vsft-cache
+```
+
+Not included: the paper's chemistry task (SciKnowEval), because its expert traces came from GPT-5 and are not part of the dataset, and GPQA, which needs gated access.
+
 ## Slurm / SSH on H100
 
 Every stage is a checked-in batch script under `slurm/jobs/`:

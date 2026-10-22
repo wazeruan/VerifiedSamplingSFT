@@ -9,7 +9,7 @@
 #
 #   slurm/fetch_online.sh --i-confirm-site-policy-allows-this \
 #       (--run-dir runs/NAME [--config configs/h100/math_qwen35.yaml] | --resume RUN_DIR) \
-#       [--venv PATH] [--cache-root PATH] [--hf-home PATH] [--datasets "math math500 gsm8k"]
+#       [--venv PATH] [--cache-root PATH] [--hf-home PATH] [--datasets "math math500 gsm8k"]   (default: the config's task.prepare)
 set -Eeuo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
@@ -17,7 +17,7 @@ usage() { sed -n '2,13p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'; }
 die() { echo "error: $*" >&2; exit 2; }
 
 CONFIRM=0 RUN_BASE="" RESUME="" CONFIG="configs/h100/math_qwen35.yaml" VENV="" CACHE_ROOT=""
-HF_HOME_DIR="" DATASETS="math math500 gsm8k"
+HF_HOME_DIR="" DATASETS=""   # empty = the run config's task.prepare
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --i-confirm-site-policy-allows-this) CONFIRM=1; shift ;;
@@ -37,7 +37,6 @@ done
 [[ -z "$RUN_BASE" || -z "$RESUME" ]] || die "--run-dir and --resume are mutually exclusive"
 if [[ -n "${SLURM_JOB_ID:-}" ]]; then echo "note: running inside job $SLURM_JOB_ID" >&2; fi
 command -v uv >/dev/null || die "uv not on PATH"
-for d in $DATASETS; do case "$d" in math|math500|gsm8k) ;; *) die "unknown dataset '$d'" ;; esac; done
 
 # Reuse submit.sh's run-dir claim + code snapshot (dry submission of nothing is not
 # possible), so claim and snapshot here with the same layout.
@@ -66,6 +65,10 @@ else
     "git_commit=$(git -C "$PROJECT_DIR" rev-parse HEAD 2>/dev/null || echo unknown)"
 fi
 CODE="$RUN_DIR/code"
+if [[ -z "$DATASETS" ]]; then
+  DATASETS="$(python3 "$PROJECT_DIR/slurm/lib/cfg.py" "$RUN_DIR/config.yaml" task.prepare math math500 gsm8k | tr '\n' ' ')"
+fi
+for d in $DATASETS; do case "$d" in math|math500|gsm8k|medical|mmlu) ;; *) die "unknown dataset '$d'" ;; esac; done
 CACHE_ROOT="$(abspath "${CACHE_ROOT:-.cache}")"
 if [[ -n "$VENV" ]]; then
   VENV="$(abspath "$VENV")"

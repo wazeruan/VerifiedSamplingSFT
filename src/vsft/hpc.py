@@ -290,7 +290,7 @@ def cmd_config_get(a) -> int:
     obj = cfg
     for part in a.key.split("."):
         obj = getattr(obj, part)
-    print(obj)
+    print("\n".join(str(x) for x in obj) if isinstance(obj, (list, tuple)) else obj)
     return 0
 
 
@@ -313,10 +313,11 @@ def cmd_download_model(a) -> int:
 
 
 def config_models(cfg) -> list[str]:
-    """Every model a run needs: the student, plus the verifier when it is a separate model."""
+    """Every model a run needs: the student, plus a separate verifier and eval judge."""
     names = [cfg.model.name_or_path]
-    if cfg.verifier.model and cfg.verifier.model not in names:
-        names.append(cfg.verifier.model)
+    for extra in (cfg.verifier.model, cfg.eval.judge_model):
+        if extra and extra not in names:
+            names.append(extra)
     return names
 
 

@@ -79,13 +79,13 @@ Environment and storage
 
 Stage inputs
   --stages LIST           pipeline stages, comma separated, in order
-  --input PATH            boost input JSONL (default RUN_DIR/data/math_l345_train.jsonl)
+  --input PATH            boost input JSONL (default RUN_DIR/data/<task.train_file>)
   --train-data PATH       train input JSONL (default RUN_DIR/boosted.jsonl)
   --train-resume DIR      resume training from RUN_DIR/sft*/state-* (train stage only)
   --accelerate-config F   accelerate config for multi-GPU train (e.g. FSDP)
   --eval-model PATH|ID    evaluate this model instead of the run's trained model
   --eval-data PATH        eval JSONL (repeatable; default the run's MATH/MATH-500/GSM8K)
-  --datasets "A B"        datasets for prepare (default "math math500 gsm8k")
+  --datasets "A B"        datasets for prepare (default: the config's task.prepare)
   --depend-on JOBID[:..]  afterok dependency for the first submitted stage (reconciled)
   --allow-duplicate       submit even if the same stage of this run is queued/running
   --refresh-code          with --resume: replace the run's code snapshot with this checkout
@@ -215,7 +215,7 @@ if [[ "$STAGE" == "compare" ]]; then
     || die "--eval-model, --train-data and --train-resume need a single stage, not compare"
 fi
 if [[ -n "$DATASETS" ]]; then
-  for d in $DATASETS; do case "$d" in math|math500|gsm8k) ;; *) die "unknown dataset '$d'" ;; esac; done
+  for d in $DATASETS; do case "$d" in math|math500|gsm8k|medical|mmlu) ;; *) die "unknown dataset '$d'" ;; esac; done
 fi
 
 PROJECT_DIR="$(cd "$PROJECT_DIR" 2>/dev/null && pwd)" || die "--project-dir does not exist"
@@ -459,6 +459,15 @@ fi
 RUN_CONFIG="$RUN_DIR/config.yaml"
 CODE_DIR="$RUN_DIR/code"
 LOG_DIR="$RUN_DIR/logs"
+cfg_get() {  # cfg_get section.key [default...]: value(s) from the run config, one per line
+  local key="$1"; shift
+  local f="$RUN_CONFIG"; [[ -f "$f" ]] || f="${CONFIG:-}"
+  if [[ -n "$f" && -f "$f" ]]; then
+    python3 "$PROJECT_DIR/slurm/lib/cfg.py" "$f" "$key" "$@"
+  else
+    printf '%s\n' "$@"
+  fi
+}
 sha256_of() { python3 -c 'import hashlib,sys; print(hashlib.sha256(open(sys.argv[1],"rb").read()).hexdigest())' "$1"; }
 if [[ -z "$VENV" ]]; then
   lock_src="$CODE_DIR/uv.lock"; [[ -f "$lock_src" ]] || lock_src="$PROJECT_DIR/uv.lock"
@@ -482,7 +491,7 @@ if [[ "$DRY_RUN" -eq 0 ]]; then
   # Inputs that must exist now because nothing earlier in this submission produces them.
   needs_existing() { [[ -z "$DEP" ]] && ! has_stage "$1"; }
   if has_stage boost && needs_existing prepare; then
-    f="${INPUT:-$RUN_DIR/data/math_l345_train.jsonl}"; [[ -s "$f" ]] || die "boost input missing: $f (run prepare or pass --input)"
+    f="${INPUT:-$RUN_DIR/data/$(cfg_get task.train_file math_l345_train.jsonl)}"; [[ -s "$f" ]] || die "boost input missing: $f (run prepare or pass --input)"
   fi
   if has_stage train && needs_existing boost; then
     f="${TRAIN_DATA:-$RUN_DIR/boosted.jsonl}"; [[ -s "$f" ]] || die "train data missing: $f"
@@ -497,7 +506,7 @@ if [[ "$DRY_RUN" -eq 0 ]]; then
     [[ -n "$td" && -f "$td/SUCCEEDED.json" ]] || die "no successfully trained model in run (pass --eval-model or include train)"
   fi
   if has_stage paper_sample && needs_existing prepare; then
-    f="$RUN_DIR/data/math_l345_train.jsonl"; [[ -s "$f" ]] || die "paper sampler input missing: $f (run prepare)"
+    f="$RUN_DIR/data/$(cfg_get task.train_file math_l345_train.jsonl)"; [[ -s "$f" ]] || die "paper sampler input missing: $f (run prepare)"
   fi
   if has_stage train_paper && needs_existing paper_sample; then
     f="${TRAIN_DATA:-$RUN_DIR/paper_sampled.jsonl}"; [[ -s "$f" ]] || die "train_paper data missing: $f (run paper_sample)"
@@ -512,9 +521,9 @@ if [[ "$DRY_RUN" -eq 0 ]]; then
   for s in eval eval_sft eval_base eval_paper; do
     # Test sets must exist now unless prepare is part of this submission.
     if has_stage "$s" && ! has_stage prepare && [[ -z "$DEP" && ${#EVAL_DATA[@]} -eq 0 ]]; then
-      for f in math_l345_test math500_test gsm8k_test; do
-        [[ -s "$RUN_DIR/data/$f.jsonl" ]] || die "$s: test set missing: $RUN_DIR/data/$f.jsonl (run prepare)"
-      done
+      while IFS= read -r f; do
+        [[ -z "$f" ]] || [[ -s "$RUN_DIR/data/$f" ]] || die "$s: test set missing: $RUN_DIR/data/$f (run prepare)"
+      done < <(cfg_get task.eval_files math_l345_test.jsonl math500_test.jsonl gsm8k_test.jsonl)
     fi
   done
   if has_stage eval_sft && needs_existing train_sft && [[ -z "$EVAL_MODEL" ]]; then
@@ -543,27 +552,9 @@ fi
 
 # A separate verifier shares the boost GPU with the student: that needs an 80 GB H100.
 # Checked here (stdlib YAML subset reader) so a smaller GPU never wastes the queue wait.
-cfg_for_check="$RUN_CONFIG"; [[ -f "$cfg_for_check" ]] || cfg_for_check="${CONFIG:-}"
-if has_stage boost && [[ -n "$cfg_for_check" && -f "$cfg_for_check" ]]; then
-  sep_verifier="$(python3 - "$cfg_for_check" <<'PY'
-import re, sys
-sec, vals = None, {}
-for line in open(sys.argv[1]):
-    line = line.split("#", 1)[0].rstrip()
-    if not line.strip():
-        continue
-    m = re.match(r"^(\w+):\s*$", line)
-    if m:
-        sec = m.group(1); continue
-    m = re.match(r"^\s+(\w+):\s*(.*)$", line)
-    if m and sec:
-        vals[(sec, m.group(1))] = m.group(2).strip().strip("'\"")
-v = vals.get(("verifier", "model"), "")
-s = vals.get(("model", "name_or_path"), "")
-print("1" if v and v != s else "0")
-PY
-)"
-  if [[ "$sep_verifier" == "1" ]] && awk -v m="$MIN_GPU_MEM_GB" 'BEGIN{exit !(m < 79)}'; then
+if has_stage boost; then
+  sep_v="$(cfg_get verifier.model "")"; sep_s="$(cfg_get model.name_or_path "")"
+  if [[ -n "$sep_v" && "$sep_v" != "$sep_s" ]] && awk -v m="$MIN_GPU_MEM_GB" 'BEGIN{exit !(m < 79)}'; then
     die "this config runs a separate verifier next to the student on the boost GPU, which needs an 80 GB H100: pass --min-gpu-mem-gb 79 (the default) and use an 80 GB H100 partition"
   fi
 fi

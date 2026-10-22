@@ -14,7 +14,16 @@ vsft_probe_network "https://huggingface.co/api/models/Qwen/Qwen3.5-0.8B"
 vsft_preflight
 vsft_mark_started_cpu
 DATA_DIR="$VSFT_RUN_DIR/data"
-read -r -a DATASETS <<< "${VSFT_DATASETS:-math math500 gsm8k}"
+# Datasets come from the run's config (task.prepare) unless --datasets was given.
+DATASETS=()
+if [[ -n "${VSFT_DATASETS:-}" ]]; then
+  read -r -a DATASETS <<< "$VSFT_DATASETS"
+else
+  while IFS= read -r d; do
+    if [[ -n "$d" ]]; then DATASETS+=("$d"); fi
+  done < <("$VSFT_PY" -m vsft.hpc config-get --config "$VSFT_CONFIG" task.prepare)
+fi
+[[ ${#DATASETS[@]} -gt 0 ]] || { _log "no datasets to prepare"; exit 64; }
 vsft_run "$VSFT_PY" -m vsft.cli prepare "${DATASETS[@]}" --out-dir "$DATA_DIR"
 vsft_run "$VSFT_PY" -m vsft.hpc download-model --config "$VSFT_CONFIG"
 for f in "$DATA_DIR"/*.jsonl; do [[ -s "$f" ]] || { _log "empty dataset $f"; exit 3; }; done

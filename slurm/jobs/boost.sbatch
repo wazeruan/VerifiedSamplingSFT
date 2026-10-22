@@ -11,7 +11,8 @@
 #SBATCH --error=slurm-%x-%j.err
 source "${VSFT_CODE_DIR:?submit through slurm/submit.sh}/slurm/lib/job_common.sh"
 vsft_init
-INPUT="${VSFT_INPUT:-$VSFT_RUN_DIR/data/math_l345_train.jsonl}"
+TRAIN_FILE="$("$VSFT_PY" -m vsft.hpc config-get --config "$VSFT_CONFIG" task.train_file)"
+INPUT="${VSFT_INPUT:-$VSFT_RUN_DIR/data/$TRAIN_FILE}"
 OUTPUT="$VSFT_RUN_DIR/boosted.jsonl"
 # Student and (if separate) verifier must both be in the offline HF cache.
 REQ=(--require-file "$INPUT" --require-file "$VSFT_CONFIG")

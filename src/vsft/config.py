@@ -145,6 +145,24 @@ class EvalConfig:
     max_new_tokens: int = 1024
     temperature: float = 0.0
     batch_size: int = 16
+    # Open-ended QA (answer_type "judge") is graded by an LLM that compares the response with
+    # the reference answer (the paper used GPT-5-mini). Empty = the model under evaluation
+    # judges itself, which is only suitable for smoke tests.
+    judge_model: str = ""
+    judge_gpu_memory_utilization: float = 0.35  # second vLLM engine next to the student
+    judge_max_new_tokens: int = 16
+
+
+@dataclass
+class TaskConfig:
+    """Which prepared files a run trains and evaluates on (names under RUN_DIR/data)."""
+
+    name: str = "math"
+    prepare: list = field(default_factory=lambda: ["math", "math500", "gsm8k"])
+    train_file: str = "math_l345_train.jsonl"
+    eval_files: list = field(
+        default_factory=lambda: ["math_l345_test.jsonl", "math500_test.jsonl", "gsm8k_test.jsonl"]
+    )
 
 
 @dataclass
@@ -153,6 +171,7 @@ class Config:
     backend: BackendConfig = field(default_factory=BackendConfig)
     boost: BoostConfig = field(default_factory=BoostConfig)
     paper: PaperSamplerConfig = field(default_factory=PaperSamplerConfig)
+    task: TaskConfig = field(default_factory=TaskConfig)
     verifier: VerifierConfig = field(default_factory=VerifierConfig)
     train: TrainConfig = field(default_factory=TrainConfig)
     eval: EvalConfig = field(default_factory=EvalConfig)
@@ -241,8 +260,28 @@ def validate_paper(pc: PaperSamplerConfig) -> None:
         raise ValueError("paper sampling needs temperature > 0 and top_p in (0, 1]")
 
 
+def validate_task(task: TaskConfig, ev: EvalConfig) -> None:
+    from vsft.data import PREPARERS
+
+    bad = [d for d in task.prepare if d not in PREPARERS]
+    if not task.prepare or bad:
+        raise ValueError(
+            f"task.prepare must list datasets from {sorted(PREPARERS)}; got {bad or []}"
+        )
+    for name, files in (("train_file", [task.train_file]), ("eval_files", task.eval_files)):
+        if not files or not all(
+            isinstance(f, str) and f.endswith(".jsonl") and "/" not in f for f in files
+        ):
+            raise ValueError(f"task.{name} must be .jsonl file name(s) without directories")
+    if len(set(task.eval_files)) != len(task.eval_files):
+        raise ValueError("task.eval_files has duplicates")
+    if not 0 < ev.judge_gpu_memory_utilization < 1 or ev.judge_max_new_tokens < 1:
+        raise ValueError("eval.judge_gpu_memory_utilization in (0,1) and judge_max_new_tokens >= 1")
+
+
 def validate(cfg: Config) -> None:
     validate_paper(cfg.paper)
+    validate_task(cfg.task, cfg.eval)
     from vsft.prompts import PROPOSAL_PROMPTS
 
     b, v, m, be = cfg.boost, cfg.verifier, cfg.model, cfg.backend

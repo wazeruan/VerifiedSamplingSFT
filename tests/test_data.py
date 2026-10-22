@@ -82,4 +82,4 @@ def test_prepare_math500_and_gsm8k(tmp_path, fake_hub):
     a, b = read_jsonl(tmp_path / "gsm8k_test.jsonl")
     assert a["answer"] == "1234" and a["expert"] == "a <<1+1=2>>\nso 2"
     assert b["answer"] == "7" and b["expert"] == "x #### y"
-    assert set(data_mod.PREPARERS) == {"math", "math500", "gsm8k"}
+    assert set(data_mod.PREPARERS) == {"math", "math500", "gsm8k", "medical", "mmlu"}

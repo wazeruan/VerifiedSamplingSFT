@@ -38,10 +38,16 @@ EVAL_DATA=()
 if [[ -n "${VSFT_EVAL_DATA:-}" ]]; then
   while IFS= read -r line; do [[ -n "$line" ]] && EVAL_DATA+=("$line"); done <<< "$VSFT_EVAL_DATA"
 else
-  EVAL_DATA=("$VSFT_RUN_DIR/data/math_l345_test.jsonl" "$VSFT_RUN_DIR/data/math500_test.jsonl"
-             "$VSFT_RUN_DIR/data/gsm8k_test.jsonl")
+  # The run's test sets (task.eval_files), under RUN_DIR/data.
+  EVAL_FILES="$("$VSFT_PY" -m vsft.hpc config-get --config "$VSFT_CONFIG" task.eval_files)"
+  while IFS= read -r line; do
+    if [[ -n "$line" ]]; then EVAL_DATA+=("$VSFT_RUN_DIR/data/$line"); fi
+  done <<< "$EVAL_FILES"
 fi
 REQ=(--require-model "$MODEL")
+# An LLM judge (open-ended QA tasks) must also be in the offline cache.
+JUDGE_MODEL="$("$VSFT_PY" -m vsft.hpc config-get --config "$VSFT_CONFIG" eval.judge_model)"
+if [[ -n "$JUDGE_MODEL" ]]; then REQ+=(--require-model "$JUDGE_MODEL"); fi
 for f in "${EVAL_DATA[@]}"; do REQ+=(--require-file "$f"); done
 vsft_preflight gpu "${REQ[@]}"
 if [[ -n "$TRAIN_DIR" ]]; then "$VSFT_PY" -m vsft.hpc check-train --dir "$TRAIN_DIR"; fi

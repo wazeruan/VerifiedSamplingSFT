@@ -120,8 +120,88 @@ def prepare_gsm8k(out_dir: str | Path) -> int:
     return len(rows)
 
 
+def prepare_medical(out_dir: str | Path, n_eval: int = 1000, seed: int = 0) -> dict[str, int]:
+    """HuatuoGPT-o1 medical QA, as in the paper.
+
+    Train: FreedomIntelligence/medical-o1-reasoning-SFT (en). The expert trace is the
+    reasoning (Complex_CoT) followed by the final response; there is no short reference
+    answer, so train rows carry none (the verifier works from the expert trace alone).
+    Eval: `n_eval` questions sampled at random from medical-o1-verifiable-problem (the RL
+    set), minus any question that is also in the training set; graded by an LLM judge
+    against the short ground-truth answer (answer_type "judge").
+    """
+    from datasets import load_dataset
+
+    train_ds = load_dataset("FreedomIntelligence/medical-o1-reasoning-SFT", "en", split="train")
+    train, seen = [], set()
+    for i, ex in enumerate(train_ds):
+        q, cot, resp = ex["Question"], ex["Complex_CoT"], ex["Response"]
+        if not (q and cot and resp):
+            continue
+        seen.add(_norm_problem(q))
+        train.append(
+            {
+                "id": f"med-train-{i}",
+                "question": q,
+                "expert": f"{cot.strip()}\n\n{resp.strip()}",
+                "answer": None,
+                "answer_type": "judge",
+            }
+        )
+    pool_ds = load_dataset("FreedomIntelligence/medical-o1-verifiable-problem", split="train")
+    pool = []
+    for i, ex in enumerate(pool_ds):
+        q, a = ex["Open-ended Verifiable Question"], ex["Ground-True Answer"]
+        if q and a and str(a).strip() and _norm_problem(q) not in seen:
+            pool.append(
+                {
+                    "id": f"med-eval-{i}",
+                    "question": q,
+                    "expert": str(a),
+                    "answer": str(a),
+                    "answer_type": "judge",
+                }
+            )
+    if n_eval > len(pool):
+        raise ValueError(f"n_eval {n_eval} > {len(pool)} eval candidates")
+    test = random.Random(seed).sample(pool, n_eval)
+    out = Path(out_dir)
+    write_jsonl_atomic(out / "medical_train.jsonl", train)
+    write_jsonl_atomic(out / "medical_test.jsonl", test)
+    log.info("medical: %d train / %d test -> %s", len(train), len(test), out)
+    return {"train": len(train), "test": len(test)}
+
+
+def prepare_mmlu(out_dir: str | Path, n: int = 1000, seed: int = 0) -> int:
+    """MMLU (cais/mmlu, all subjects) as a retention benchmark: `n` random test questions,
+    multiple choice with the letter as the reference answer."""
+    from datasets import load_dataset
+
+    ds = load_dataset("cais/mmlu", "all", split="test")
+    letters = "ABCD"
+    rows = [
+        {
+            "id": f"mmlu-{i}",
+            "question": ex["question"].strip()
+            + "\n\n"
+            + "\n".join(f"{letters[j]}. {c}" for j, c in enumerate(ex["choices"]))
+            + "\n\nAnswer with the letter of the correct option.",
+            "expert": "",
+            "answer": letters[ex["answer"]],
+            "answer_type": "mc",
+            "subject": ex["subject"],
+        }
+        for i, ex in enumerate(ds)
+    ]
+    rows = random.Random(seed).sample(rows, min(n, len(rows)))
+    write_jsonl_atomic(Path(out_dir) / "mmlu_test.jsonl", rows)
+    return len(rows)
+
+
 PREPARERS = {
     "math": prepare_math,
     "math500": prepare_math500,
+    "medical": prepare_medical,
+    "mmlu": prepare_mmlu,
     "gsm8k": prepare_gsm8k,
 }

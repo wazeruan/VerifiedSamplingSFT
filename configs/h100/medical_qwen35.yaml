@@ -1,0 +1,56 @@
+# Medical QA (HuatuoGPT-o1), the paper's second task: student Qwen3.5-4B, verifier
+# Qwen3.5-9B, LoRA SFT, on one 80 GB H100 (submit with --min-gpu-mem-gb 79, the default).
+#
+# Train: FreedomIntelligence/medical-o1-reasoning-SFT (expert = reasoning + response).
+# Eval:  1000 held-out open-ended questions from medical-o1-verifiable-problem, graded by an
+#        LLM judge against the short ground-truth answer (the paper used GPT-5-mini; here the
+#        judge is Qwen3.5-9B). Retention checks: MMLU (1000 questions), MATH-500 and GSM8K.
+#
+# Run it:  slurm/submit.sh compare --account ACCOUNT --config configs/h100/medical_qwen35.yaml
+task:
+  name: medical
+  prepare: [medical, mmlu, math500, gsm8k]
+  train_file: medical_train.jsonl
+  eval_files:
+    - medical_test.jsonl
+    - mmlu_test.jsonl
+    - math500_test.jsonl
+    - gsm8k_test.jsonl
+model:
+  name_or_path: Qwen/Qwen3.5-4B
+  dtype: bfloat16
+  max_model_len: 8192
+backend:
+  kind: vllm
+  gpu_memory_utilization: 0.50
+boost:
+  num_candidates: 8
+  max_rounds: 6
+  temperature: 1.0
+  max_new_tokens: 1856
+  tie_epsilon: 0.02
+  on_failure: expert
+  proposal_prompt: generic
+  examples_per_batch: 256
+verifier:
+  model: Qwen/Qwen3.5-9B
+  gpu_memory_utilization: 0.35
+  max_new_tokens: 256
+  use_answer_check: true
+train:
+  learning_rate: 1.0e-4
+  num_epochs: 2
+  per_device_batch_size: 2
+  grad_accum_steps: 16
+  max_seq_len: 2048
+  param_dtype: auto
+  mixed_precision: bf16
+  gradient_checkpointing: true
+  lora_r: 64
+  lora_alpha: 128
+  save_every_steps: 200
+eval:
+  max_new_tokens: 2048
+  batch_size: 256
+  judge_model: Qwen/Qwen3.5-9B
+  judge_gpu_memory_utilization: 0.35
