@@ -152,12 +152,10 @@ def cmd_train(args) -> int:
 
 
 def _has_judge_rows(path) -> bool:
-    """True if the JSONL's first row is open-ended QA (a file has one answer type)."""
+    """True if any row of the JSONL is open-ended QA (files may mix answer types)."""
     from vsft.io import read_jsonl
 
-    for row in read_jsonl(path):
-        return row.get("answer_type") == "judge"
-    return False
+    return any(row.get("answer_type") == "judge" for row in read_jsonl(path))
 
 
 def _build_judge_backend(cfg, student_backend):

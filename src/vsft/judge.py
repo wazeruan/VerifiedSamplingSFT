@@ -32,7 +32,9 @@ def parse_verdict(text: str) -> bool | None:
     The last verdict word wins, and "INCORRECT" is matched before "CORRECT" so it is never
     mistaken for it.
     """
-    hits = _VERDICT.findall(text.upper())
+    # "NOT CORRECT" / "NOT_CORRECT" means INCORRECT; match it before the bare word.
+    upper = re.sub(r"\bNOT[\s_-]+CORRECT\b", "INCORRECT", text.upper())
+    hits = _VERDICT.findall(upper)
     if not hits:
         return None
     return hits[-1] == "CORRECT"

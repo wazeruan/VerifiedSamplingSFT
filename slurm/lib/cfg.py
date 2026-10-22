@@ -16,10 +16,45 @@ import re
 import sys
 
 
+def _strip_comment(line):
+    """Drop a trailing `# comment`: a '#' starts one only outside quotes and after whitespace
+    (or at the start), so `run#1`, `"a #b"` and URLs with fragments survive."""
+    quote = None
+    for i, ch in enumerate(line):
+        if quote:
+            if ch == quote:
+                quote = None
+        elif ch in "'\"":
+            quote = ch
+        elif ch == "#" and (i == 0 or line[i - 1].isspace()):
+            return line[:i]
+    return line
+
+
+def _split_flow(inner):
+    """Split `a, "b, c", d` on commas outside quotes."""
+    items, cur, quote = [], [], None
+    for ch in inner:
+        if quote:
+            cur.append(ch)
+            if ch == quote:
+                quote = None
+        elif ch in "'\"":
+            quote = ch
+            cur.append(ch)
+        elif ch == ",":
+            items.append("".join(cur))
+            cur = []
+        else:
+            cur.append(ch)
+    items.append("".join(cur))
+    return [x for x in items if x.strip()]
+
+
 def _scalar(v):
     v = v.strip()
     if v.startswith("[") and v.endswith("]"):
-        return [_scalar(x) for x in v[1:-1].split(",") if x.strip()]
+        return [_scalar(x) for x in _split_flow(v[1:-1])]
     if len(v) >= 2 and v[0] in "'\"" and v[-1] == v[0]:
         return v[1:-1]
     return v
@@ -28,7 +63,7 @@ def _scalar(v):
 def parse(text):
     root, section, open_list = {}, None, None
     for raw in text.splitlines():
-        line = raw.split("#", 1)[0].rstrip()
+        line = _strip_comment(raw).rstrip()
         if not line.strip():
             continue
         m = re.match(r"^(\w+):\s*$", line)
